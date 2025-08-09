@@ -120,3 +120,26 @@
     @apply bg-background text-foreground;
   }
 }
+
+@media print {
+  /* Hide typical shell elements */
+  aside, nav, header, footer,
+  .app-sidebar, .app-topbar, .breadcrumbs, .no-print {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  /* Let the main area take full width */
+  main, .app-content, .print-container {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  /* Optional: remove page background/padding for clean A4 */
+  @page {
+    size: A4;
+    margin: 16mm;
+  }
+}

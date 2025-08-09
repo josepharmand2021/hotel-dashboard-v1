@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
@@ -13,6 +14,11 @@ import {
   Users,
   Search,
   PiggyBank,
+  ChevronRight,
+  BookOpen,
+  Wallet,
+  ListPlus,
+  BarChart3,
 } from 'lucide-react';
 
 import {
@@ -22,7 +28,6 @@ import {
   AccordionContent,
 } from '@/components/ui/accordion';
 
-// ===== Static sections (non-Finance)
 const primaryItems = [
   { label: 'Overview', href: '/dashboard/overview', icon: LayoutDashboard },
   { label: 'Vendors', href: '/vendors', icon: Building2 },
@@ -34,7 +39,11 @@ const receivingItems = [
   { label: 'Service Acceptance', href: '/receiving/service-acceptance' },
 ];
 
-// ===== Finance groups
+const budgetItems = [
+  { label: 'Budget Lines', href: '/budget-lines', icon: Wallet },
+  { label: 'Budget Report', href: '/reports/budgets', icon: BarChart3 },
+];
+
 const financeGroups = [
   {
     label: 'Reports',
@@ -55,88 +64,138 @@ const financeGroups = [
     label: 'Expenses',
     links: [{ label: 'All Expenses', href: '/finance/expenses' }],
   },
-  {
-    label: 'Petty-Cash',
-    links: [
-      { label: 'Dashboard', href: '/finance/petty-cash/dashboard' },
-      { label: 'Topups', href: '/finance/petty-cash/topups' },
-      { label: 'Expenses', href: '/finance/petty-cash/expenses' },
-    ],
-  },
 ];
+
+const mastersItems = [
+  { label: 'Categories', href: '/masters/categories' },
+  { label: 'Subcategories', href: '/masters/subcategories' },
+];
+
+function isActive(pathname: string, href: string) {
+  return pathname === href || pathname.startsWith(href + '/');
+}
+
+function NavItem({
+  href, label, icon: Icon, active, depth = 0,
+}: {
+  href: string;
+  label: string;
+  icon?: React.ComponentType<any>;
+  active: boolean;
+  depth?: number;
+}) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        'group flex items-center gap-2 rounded-lg px-2 py-2 text-sm transition-colors',
+        active
+          ? 'bg-accent/60 text-foreground ring-1 ring-border'
+          : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+      )}
+      style={{ paddingLeft: 8 + depth * 12 }}
+    >
+      {Icon ? <Icon className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 opacity-60" />}
+      <span className="truncate">{label}</span>
+    </Link>
+  );
+}
 
 export default function AppSidebar() {
   const pathname = usePathname();
 
-  return (
-    <aside className="w-64 shrink-0 border-r min-h-screen p-3">
-      {/* Brand */}
-      <div className="font-semibold text-lg mb-4">Tammu</div>
+  const openFinance = financeGroups
+    .filter((g) => g.links.some((l) => isActive(pathname, l.href)))
+    .map((g) => g.label);
 
-      {/* Primary */}
-      <nav className="space-y-2">
-        {primaryItems.map((it) => {
-          const Icon = it.icon;
-          return (
-            <Link
+  return (
+    <aside className="w-64 shrink-0 border-r bg-background/60 backdrop-blur supports-[backdrop-filter]:bg-background/40">
+      {/* Brand (logo) */}
+      <div className="sticky top-0 z-10 border-b bg-background/80 px-3 py-3">
+        <Link href="/dashboard/overview" className="flex items-center gap-2">
+          {/* Taruh logo di /public/brand/logo.png atau ganti path di bawah */}
+          <span className="font-semibold tracking-tight">IAK Dashboard</span>
+        </Link>
+      </div>
+
+      {/* Nav */}
+      <nav className="p-3 space-y-4 overflow-y-auto max-h-[calc(100vh-56px)]">
+        {/* Primary */}
+        <div className="space-y-1">
+          <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            Primary
+          </div>
+          {primaryItems.map((it) => (
+            <NavItem
               key={it.href}
               href={it.href}
-              className={cn(
-                'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
-                pathname === it.href && 'bg-accent'
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {it.label}
-            </Link>
-          );
-        })}
+              label={it.label}
+              icon={it.icon}
+              active={isActive(pathname, it.href)}
+            />
+          ))}
+        </div>
 
-        {/* Receiving (simple group) */}
+        {/* Receiving */}
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground mt-3">
-            <Package className="h-4 w-4" />
-            <span className="font-medium">Receiving</span>
+          <div className="flex items-center gap-2 px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            <Package className="h-3.5 w-3.5" />
+            Receiving
           </div>
-          <div className="ml-6 space-y-1">
+          <div className="space-y-1">
             {receivingItems.map((c) => (
-              <Link
+              <NavItem
                 key={c.href}
                 href={c.href}
-                className={cn(
-                  'block rounded-md px-2 py-1.5 text-sm hover:bg-accent',
-                  pathname === c.href && 'bg-accent'
-                )}
-              >
-                {c.label}
-              </Link>
+                label={c.label}
+                active={isActive(pathname, c.href)}
+                depth={1}
+              />
             ))}
           </div>
         </div>
 
-        {/* Finance (accordion groups) */}
+        {/* Budget */}
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground mt-3">
-            <PiggyBank className="h-4 w-4" />
-            <span className="font-medium">Finance</span>
+          <div className="flex items-center gap-2 px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            <Wallet className="h-3.5 w-3.5" />
+            Budget
           </div>
+          <div className="space-y-1">
+            {budgetItems.map((b) => (
+              <NavItem
+                key={b.href}
+                href={b.href}
+                label={b.label}
+                icon={b.icon}
+                active={isActive(pathname, b.href)}
+                depth={1}
+              />
+            ))}
+          </div>
+        </div>
 
-          <Accordion type="multiple" className="ml-2">
+        {/* Finance */}
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            <PiggyBank className="h-3.5 w-3.5" />
+            Finance
+          </div>
+          <Accordion type="multiple" defaultValue={openFinance} className="ml-1 space-y-1">
             {financeGroups.map((g) => (
-              <AccordionItem key={g.label} value={g.label}>
-                <AccordionTrigger className="py-1 text-sm">{g.label}</AccordionTrigger>
-                <AccordionContent className="space-y-1">
+              <AccordionItem key={g.label} value={g.label} className="rounded-lg border">
+                <AccordionTrigger className="px-2 py-2 text-sm hover:no-underline">
+                  {g.label}
+                </AccordionTrigger>
+                <AccordionContent className="space-y-1 pb-2">
                   {g.links.map((l) => (
-                    <Link
+                    <NavItem
                       key={l.href}
                       href={l.href}
-                      className={cn(
-                        'block rounded-md px-2 py-1.5 text-sm hover:bg-accent ml-4',
-                        pathname === l.href && 'bg-accent'
-                      )}
-                    >
-                      {l.label}
-                    </Link>
+                      label={l.label}
+                      active={isActive(pathname, l.href)}
+                      depth={2}
+                    />
                   ))}
                 </AccordionContent>
               </AccordionItem>
@@ -144,39 +203,49 @@ export default function AppSidebar() {
           </Accordion>
         </div>
 
+        {/* Masters */}
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            <BookOpen className="h-3.5 w-3.5" />
+            Masters
+          </div>
+          <div className="space-y-1">
+            {mastersItems.map((m) => (
+              <NavItem
+                key={m.href}
+                href={m.href}
+                label={m.label}
+                active={isActive(pathname, m.href)}
+                depth={1}
+              />
+            ))}
+          </div>
+        </div>
+
         {/* Others */}
-        <Link
-          href="/documents/uploads"
-          className={cn(
-            'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent mt-3',
-            pathname?.startsWith('/documents') && 'bg-accent'
-          )}
-        >
-          <Folder className="h-4 w-4" />
-          Documents
-        </Link>
-
-        <Link
-          href="/shareholders"
-          className={cn(
-            'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
-            pathname?.startsWith('/shareholders') && 'bg-accent'
-          )}
-        >
-          <Users className="h-4 w-4" />
-          Shareholders
-        </Link>
-
-        <Link
-          href="/search"
-          className={cn(
-            'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
-            pathname === '/search' && 'bg-accent'
-          )}
-        >
-          <Search className="h-4 w-4" />
-          Search
-        </Link>
+        <div className="space-y-1">
+          <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            Others
+          </div>
+          <NavItem
+            href="/documents/uploads"
+            label="Documents"
+            icon={Folder}
+            active={pathname?.startsWith('/documents') ?? false}
+          />
+          <NavItem
+            href="/shareholders"
+            label="Shareholders"
+            icon={Users}
+            active={pathname?.startsWith('/shareholders') ?? false}
+          />
+          <NavItem
+            href="/search"
+            label="Search"
+            icon={Search}
+            active={pathname === '/search'}
+          />
+        </div>
       </nav>
     </aside>
   );
