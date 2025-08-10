@@ -151,3 +151,4 @@ export async function updatePurchaseOrderStatus(id: number, status: string) {
   const { error } = await supabase.from('purchase_orders').update({ status }).eq('id', id);
   if (error) throw error;
 }
+

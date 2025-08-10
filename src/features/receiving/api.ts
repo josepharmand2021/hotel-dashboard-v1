@@ -270,3 +270,95 @@ export async function listGRN({ q = '', page = 1, pageSize = 50 } = {}) {
 
   return { rows: (data ?? []) as GrnListRow[], total: count ?? 0 };
 }
+
+export async function getGRNItems(grnId: number) {
+  const { data, error } = await supabase
+    .from('grn_items')
+    .select(`
+      id,
+      description,
+      uom,
+      qty_received,
+      qty_overage,
+      note,
+      po_item:po_items(id, qty)
+    `)
+    .eq('grn_id', grnId)
+    .order('id', { ascending: true });
+
+  if (error) throw error;
+
+  return (data || []).map((row: any) => {
+    const poQty = Number(row?.po_item?.qty ?? 0);
+    const recv  = Number(row?.qty_received ?? 0);
+    const over  = Number(row?.qty_overage ?? Math.max(recv - poQty, 0));
+    return {
+      id: row.id,
+      description: row.description ?? null,
+      uom: row.uom ?? null,
+      qty_po: poQty,
+      qty_received: recv,
+      qty_overage: over,
+      note: row.note ?? null,
+    };
+  });
+}
+
+
+// Header GRN (ringkas)
+export async function getGRNHeader(id: number) {
+  const { data, error } = await supabase
+    .from('grns')
+    .select('id, grn_number, vendor_name, ref_no, date_received, purchase_order_id, status, purchase_orders(po_number)')
+    .eq('id', id)
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+
+export async function getGRNItemsWithPO(grnId: number) {
+  const { data, error } = await supabase
+    .from('grn_items')
+    .select(`
+      id, description, uom, qty_input, qty_matched, qty_overage, note,
+      po_item:po_items ( qty )
+    `)
+    .eq('grn_id', grnId)
+    .order('id', { ascending: true });
+  if (error) throw new Error(error.message);
+
+  return (data || []).map((r: any) => ({
+    id: r.id,
+    description: r.description ?? null,
+    uom: r.uom ?? null,
+    po_qty: Number(r?.po_item?.qty ?? 0),
+    qty_input: Number(r?.qty_input ?? 0),  // <- yang diedit admin
+    note: r?.note ?? '',
+    // opsional informasi hasil sistem (read-only):
+    qty_received: Number((r?.qty_matched ?? 0) + (r?.qty_overage ?? 0)),
+  }));
+}
+
+export async function savePhysicalReceive(params: {
+  grn_id: number;
+  ref_no?: string | null;
+  items: Array<{ id: number; qty_input: number; note?: string }>;
+}) {
+  const { grn_id, ref_no, items } = params;
+
+  const { error } = await supabase.rpc('apply_grn_form', {
+    p_grn_id: grn_id,
+    p_ref_no: ref_no ?? null,
+    p_items: items.map(i => ({
+      id: i.id,
+      qty_input: Number(i.qty_input || 0),
+      note: (i.note ?? '').trim() || null,
+    })),
+  });
+
+  if (error) throw new Error(error.message);
+  return { ok: true };
+}
+
+
