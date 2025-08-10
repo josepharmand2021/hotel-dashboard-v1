@@ -1,5 +1,11 @@
 import { supabase } from '@/lib/supabase/client';
 
+// helper aman baca nama vendor dari relasi supabase
+function getVendorNameSafe(v: any): string {
+  if (!v) return '';
+  return Array.isArray(v) ? (v[0]?.name ?? '') : (v.name ?? '');
+}
+
 export type GRNHeader = {
   id: number;
   grn_number: string;
@@ -25,20 +31,38 @@ export type GRNItem = {
   qty_received: number;
 };
 
+// PO item view: kolom di DB = unit (bukan uom)
 export type POItemView = {
   id: number;               // po_item_id
   description: string | null;
-  uom: string | null;
+  unit: string | null;      // kolom asli
+  uom?: string | null;      // alias utk kompatibilitas (unit)
   qty_order: number;
   qty_matched: number;
   qty_remaining: number;
 };
 
-/** PO helper: ambil item + sisa */
+export type GrnListRow = {
+  id: number;
+  grn_number: string;
+  date_received: string;
+  purchase_order_id: number | null;
+  po_number: string | null; // <-- dari view v_grn_list
+  vendor_id: number | null;
+  vendor_name: string | null;
+  ref_no: string | null;
+  status: string;
+  po_qty: number;
+  received_qty: number;
+  overage_qty: number;
+};
+
+/** PO helper: ambil header + item + sisa */
 export async function getPOWithItems(purchase_order_id: number) {
+  // items
   const { data: items, error } = await supabase
     .from('po_items')
-    .select('id, description, uom, qty')
+    .select('id, description, unit, qty')
     .eq('purchase_order_id', purchase_order_id)
     .order('id');
   if (error) throw error;
@@ -52,54 +76,38 @@ export async function getPOWithItems(purchase_order_id: number) {
   const byId = new Map((fulfill ?? []).map((r: any) => [r.po_item_id, r]));
   const lines: POItemView[] = (items ?? []).map((it: any) => {
     const f = byId.get(it.id) || { qty_matched: 0, qty_remaining: it.qty };
+    const unit = it.unit ?? null;
     return {
       id: it.id,
       description: it.description,
-      uom: it.uom,
+      unit,
+      uom: unit, // alias
       qty_order: Number(it.qty),
       qty_matched: Number(f.qty_matched),
       qty_remaining: Number(f.qty_remaining),
     };
   });
 
-  return { lines };
-}
+  // header (autofill vendor di form)
+  const { data: po, error: e3 } = await supabase
+    .from('purchase_orders')
+    .select('id, po_number, po_date, vendor_id, note, vendors(name)')
+    .eq('id', purchase_order_id)
+    .single();
+  if (e3) throw e3;
 
-/** List GRN (ringkas + total overage) */
-export async function listGRN(opts?: { q?: string; page?: number; pageSize?: number }) {
-  const page = Math.max(1, opts?.page ?? 1);
-  const pageSize = Math.min(100, Math.max(10, opts?.pageSize ?? 20));
-  const from = (page - 1) * pageSize, to = from + pageSize - 1;
+  const header = po
+    ? {
+        id: po.id,
+        po_number: po.po_number as string,
+        po_date: po.po_date as string | null,
+        vendor_id: po.vendor_id as number,
+        vendor_name: getVendorNameSafe((po as any).vendors),
+        note: (po as any).note as string | null,
+      }
+    : null;
 
-  let q = supabase.from('grns')
-    .select('id, grn_number, date_received, purchase_order_id, vendor_id, vendor_name, status, ref_no', { count: 'exact' })
-    .order('date_received', { ascending: false });
-
-  if (opts?.q?.trim()) {
-    const s = `%${opts.q.trim()}%`;
-    q = q.or(`grn_number.ilike.${s},ref_no.ilike.${s},vendor_name.ilike.${s},note.ilike.${s}`);
-  }
-
-  const { data, error, count } = await q.range(from, to);
-  if (error) throw error;
-
-  const ids = (data ?? []).map(r => r.id);
-  let overage: Record<number, number> = {};
-  if (ids.length) {
-    const { data: og, error: e2 } = await supabase
-      .from('grn_items')
-      .select('grn_id, qty_overage')
-      .in('grn_id', ids);
-    if (e2) throw e2;
-    for (const r of og ?? []) {
-      overage[r.grn_id] = (overage[r.grn_id] ?? 0) + Number(r.qty_overage || 0);
-    }
-  }
-
-  return {
-    rows: (data ?? []).map((r: any) => ({ ...r, overage_qty: overage[r.id] ?? 0 })),
-    total: count ?? 0, page, pageSize
-  };
+  return { header, lines };
 }
 
 export async function getGRN(id: number) {
@@ -123,6 +131,7 @@ export async function upsertGRNFromPO(input: {
   items: Array<{ po_item_id: number; uom?: string | null; qty_input: number; description?: string | null }>;
 }) {
   if (!input.items?.length) throw new Error('Minimal 1 item');
+
   if (input.id) {
     const { error } = await supabase.from('grns').update({
       grn_number: input.grn_number,
@@ -182,6 +191,7 @@ export async function upsertGRNNonPO(input: {
   items: Array<{ description: string; uom?: string | null; qty_input: number }>;
 }) {
   if (!input.items?.length) throw new Error('Minimal 1 item');
+
   if (input.id) {
     const { error } = await supabase.from('grns').update({
       grn_number: input.grn_number,
@@ -233,4 +243,30 @@ export async function deleteGRN(id: number) {
   const { error } = await supabase.from('grns').delete().eq('id', id);
   if (error) throw error;
   return true;
+}
+
+// v_grn_list sekarang sudah include po_number
+export async function listGRN({ q = '', page = 1, pageSize = 50 } = {}) {
+  let query = supabase
+    .from('v_grn_list')
+    .select(
+      'id, grn_number, date_received, purchase_order_id, po_number, vendor_id, vendor_name, ref_no, status, po_qty, received_qty, overage_qty',
+      { count: 'exact' }
+    )
+    .order('date_received', { ascending: false })
+    .order('id', { ascending: false });
+
+  if (q.trim()) {
+    query = query.or(
+      `grn_number.ilike.%${q}%,ref_no.ilike.%${q}%,vendor_name.ilike.%${q}%`
+    );
+  }
+
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  const { data, error, count } = await query.range(from, to);
+  if (error) throw error;
+
+  return { rows: (data ?? []) as GrnListRow[], total: count ?? 0 };
 }
