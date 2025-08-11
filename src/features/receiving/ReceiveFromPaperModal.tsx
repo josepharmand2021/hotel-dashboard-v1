@@ -4,14 +4,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { getGRNHeader, getGRNItemsWithPO, savePhysicalReceive } from '@/features/receiving/api';
+import { getGRNHeader, getGRNItemsWithPO, savePhysicalReceive, postGRN } from '@/features/receiving/api';
 
 type ItemRow = {
   id: number;
   description: string | null;
   uom: string | null;
   po_qty: number;
-  qty_input: number;       // <- input yang disimpan admin
+  qty_input: number;       // input yang disimpan admin
   note: string;
 };
 
@@ -21,6 +21,7 @@ export default function ReceiveFromPaperModal({
   const [header, setHeader] = useState<any>(null);
   const [items, setItems]   = useState<ItemRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [refNo, setRefNo] = useState<string>('');
 
   const fmt = useMemo(()=>new Intl.NumberFormat('id-ID'), []);
@@ -39,8 +40,7 @@ export default function ReceiveFromPaperModal({
             description: r.description ?? null,
             uom: r.uom ?? null,
             po_qty: Number(r.po_qty || r.qty_po || 0),
-            // fallback ke qty_received kalau API lama belum expose qty_input
-            qty_input: Number(r.qty_input),
+            qty_input: Number(r.qty_input ?? 0),
             note: r.note ?? '',
           }))
         );
@@ -54,20 +54,35 @@ export default function ReceiveFromPaperModal({
 
   async function onSave() {
     try {
+      setSaving(true);
+      // 1) Simpan hasil form (qty_input + note + ref no)
       await savePhysicalReceive({
         grn_id: grnId,
         ref_no: refNo,
         items: items.map(i => ({
           id: i.id,
-          qty_input: i.qty_input,   // <-- simpan ke qty_input, biar trigger hitung matched/overage
+          qty_input: Number(i.qty_input || 0),
           note: i.note,
         })),
       });
-      toast.success('Hasil form disimpan');
+
+      // 2) Coba POST (ubah status ke posted hanya jika qty matched)
+      try {
+        await postGRN(grnId);
+        toast.success('Disimpan & status diubah ke POSTED');
+      } catch (err:any) {
+        // Form tetap tersimpan, tapi belum bisa POST (biasanya karena overage)
+        toast.warning(err?.message
+          ? `Disimpan, tapi belum bisa POST: ${err.message}`
+          : 'Disimpan, tapi belum bisa POST: pastikan qty tidak melebihi sisa PO.');
+      }
+
       onSaved?.();
       onClose();
     } catch (e:any) {
       toast.error(e.message || 'Gagal menyimpan');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -179,8 +194,10 @@ export default function ReceiveFromPaperModal({
             </div>
 
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={onClose}>Batal</Button>
-              <Button onClick={onSave}>Simpan</Button>
+              <Button variant="outline" onClick={onClose} disabled={saving}>Batal</Button>
+              <Button onClick={onSave} disabled={saving}>
+                {saving ? 'Menyimpan…' : 'Simpan'}
+              </Button>
             </div>
           </>
         )}

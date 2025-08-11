@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import ReceiveFromPaperModal from '@/features/receiving/ReceiveFromPaperModal';
+// ⬇️ Tambahan
+import { Badge } from '@/components/ui/badge';
 
 
 
@@ -117,7 +119,18 @@ export default function GRNListPage() {
                     <td className="px-3 py-2">{r.po_number ?? '—'}</td>
                     <td className="px-3 py-2">{vendorLabel}</td>
                     <td className="px-3 py-2">{r.ref_no ?? '—'}</td>
-                    <td className="px-3 py-2">{r.status}</td>
+                    <td className="px-3 py-2">
+                      {(() => {
+                        const s = String(r.status || '').toLowerCase();
+                        const variant =
+                          s === 'posted' ? 'default' :
+                          s === 'received' ? 'default' :
+                          s === 'void' ? 'destructive' :
+                          'secondary';
+                        return <Badge variant={variant}>{s || 'draft'}</Badge>;
+                      })()}
+                    </td>
+               
                     <td className="px-3 py-2 text-right space-x-2">
                       <Button
                         variant="secondary"
@@ -135,13 +148,15 @@ export default function GRNListPage() {
                         Print
                       </Button>
                       
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setReceiveForId(r.id)}
-                      >
-                        Input Form
-                      </Button>
+                      {String(r.status).toLowerCase() === 'draft' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setReceiveForId(r.id)}
+                        >
+                          Post
+                        </Button>
+                      )}
 
                       {receiveForId && (
                         <ReceiveFromPaperModal

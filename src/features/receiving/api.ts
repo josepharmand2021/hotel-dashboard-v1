@@ -47,7 +47,7 @@ export type GrnListRow = {
   grn_number: string;
   date_received: string;
   purchase_order_id: number | null;
-  po_number: string | null; // <-- dari view v_grn_list
+  po_number: string | null; // dari view v_grn_list
   vendor_id: number | null;
   vendor_name: string | null;
   ref_no: string | null;
@@ -304,7 +304,6 @@ export async function getGRNItems(grnId: number) {
   });
 }
 
-
 // Header GRN (ringkas)
 export async function getGRNHeader(id: number) {
   const { data, error } = await supabase
@@ -315,7 +314,6 @@ export async function getGRNHeader(id: number) {
   if (error) throw new Error(error.message);
   return data;
 }
-
 
 export async function getGRNItemsWithPO(grnId: number) {
   const { data, error } = await supabase
@@ -333,9 +331,8 @@ export async function getGRNItemsWithPO(grnId: number) {
     description: r.description ?? null,
     uom: r.uom ?? null,
     po_qty: Number(r?.po_item?.qty ?? 0),
-    qty_input: Number(r?.qty_input ?? 0),  // <- yang diedit admin
+    qty_input: Number(r?.qty_input ?? 0),  // yang diedit admin
     note: r?.note ?? '',
-    // opsional informasi hasil sistem (read-only):
     qty_received: Number((r?.qty_matched ?? 0) + (r?.qty_overage ?? 0)),
   }));
 }
@@ -361,4 +358,22 @@ export async function savePhysicalReceive(params: {
   return { ok: true };
 }
 
+// POST: ubah status ke 'posted' HANYA jika qty matched (tanpa overage)
+export async function postGRN(grnId: number) {
+  const { data, error } = await supabase.rpc('post_grn_if_matched', { p_grn_id: grnId });
+  if (error) throw new Error(error.message);
+  return data;
+}
 
+// (opsional, kalau masih dipakai di tempat lain)
+export async function receiveGRN(grnId: number) {
+  const { data, error } = await supabase.rpc('receive_grn', { p_grn_id: grnId });
+  if (error) throw error;
+  return data;
+}
+
+export async function reopenGRN(grnId: number) {
+  const { data, error } = await supabase.rpc('reopen_grn', { p_grn_id: grnId });
+  if (error) throw error;
+  return data;
+}

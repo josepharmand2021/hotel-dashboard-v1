@@ -56,8 +56,8 @@ const financeGroups = [
   {
     label: 'Income',
     links: [
-      { label: 'Capital Injections', href: '/finance/income/capital-injections' },
-      { label: 'RAB Allocations', href: '/finance/income/rab-allocations' },
+      { label: 'Capital Injections', href: '/finance/capital-injections' },
+      { label: 'RAB Allocations', href: '/finance/rab-allocations' },
     ],
   },
   {
