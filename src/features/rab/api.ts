@@ -36,3 +36,33 @@ export async function listActiveShareholders() {
     .order('name', { ascending: true });
   if (error) throw error; return (data || []) as { id: number; name: string; ownership_percent: number }[];
 }
+
+// features/rab/api.ts
+export async function getRabTotals() {
+  const { data, error } = await supabase
+    .from('v_rab_allocation_totals')
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as { total_all_time: number; total_this_month: number };
+}
+
+// features/rab/api.ts
+export async function getRabRekeningSummary() {
+  const { data, error } = await supabase
+    .from('v_rab_rekening_summary')
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as { total_rab: number; terpakai: number; tersedia: number };
+}
+
+export async function listAllMonthGrid() {
+  const { data, error } = await supabase
+    .from('v_rab_month_grid')
+    .select('*')
+    .order('period_month', { ascending: true })
+    .order('shareholder_name', { ascending: true });
+  if (error) throw error;
+  return data as RabMonthGridRow[];
+}
