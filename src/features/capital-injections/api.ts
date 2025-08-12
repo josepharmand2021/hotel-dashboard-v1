@@ -132,6 +132,7 @@ export async function listContributions(planId: number) {
 
   if (error) throw error;
   return data;
+}
 
 export async function addContribution(payload: {
   planId: number;

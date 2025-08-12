@@ -1,57 +1,122 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { listExpenses, setExpenseStatus, deleteExpense } from '@/features/expenses/api';
-import type { Expense } from '@/features/expenses/types';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '@/components/ui/table';
-import { Button } from '@/components/ui/button';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { ExpenseTable } from '@/components/ExpenseTable';
+import { listExpenses, listCategories, listSubcategories, listActiveShareholders } from '@/features/expenses/api';
+import type { Category, Subcategory, Shareholder } from '@/features/expenses/api';
+import type { ExpenseListItem } from '@/features/expenses/types';
 
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { toast } from 'sonner';
+import Link from 'next/link';
+
+const pageSizes = [10, 20, 50, 100];
 const fmtID = new Intl.NumberFormat('id-ID');
 
-export default function ExpensesListPage(){
-  const [rows, setRows] = useState<(Expense & { shareholder_name?: string|null; account_name?: string|null; cashbox_name?: string|null })[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState<'all'|'draft'|'posted'|'void'>('all');
-  const [source, setSource] = useState<'all'|'RAB'|'PT'|'PETTY'>('all');
-  const [from, setFrom] = useState<string>('');
-  const [to, setTo] = useState<string>('');
+export default function ExpensesListPage() {
+  const router = useRouter();
+  const sp = useSearchParams();
 
-  async function fetchAll() {
-    setLoading(true);
+  // filters state
+  const [month, setMonth] = useState<string>(sp.get('month') || '');
+  const [source, setSource] = useState<'RAB'|'PT'|'PETTY'|'all'>((sp.get('source') as any) || 'all');
+  const [status, setStatus] = useState<'posted'|'draft'|'void'|'all'>((sp.get('status') as any) || 'all');
+
+  // >>> gunakan 'all' sebagai sentinel, bukan string kosong
+  const [categoryId, setCategoryId] = useState<string>(sp.get('category_id') || 'all');
+  const [subcategoryId, setSubcategoryId] = useState<string>(sp.get('subcategory_id') || 'all');
+  const [shareholderId, setShareholderId] = useState<string>(sp.get('shareholder_id') || 'all');
+
+  // pagination
+  const [page, setPage] = useState<number>(Number(sp.get('page') || 1));
+  const [pageSize, setPageSize] = useState<number>(Number(sp.get('pageSize') || 20));
+
+  // data
+  const [cats, setCats] = useState<Category[]>([]);
+  const [subs, setSubs] = useState<Subcategory[]>([]);
+  const [shs, setShs] = useState<Shareholder[]>([]);
+  const [rows, setRows] = useState<ExpenseListItem[]>([]);
+  const [count, setCount] = useState<number>(0);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  async function loadSubs(cid?: string) {
     try {
-      const data = await listExpenses({
-        status, source,
-        from: from || undefined,
-        to: to || undefined,
-      });
-      setRows(data);
+      // kalau 'all', ambil semua subcategory
+      const s = await listSubcategories(cid && cid !== 'all' ? Number(cid) : undefined);
+      setSubs(s);
     } catch (e:any) {
-      toast.error(e.message || 'Gagal memuat');
-    } finally { setLoading(false); }
+      toast.error(e.message || 'Gagal memuat subcategory');
+    }
   }
 
-  useEffect(()=>{ fetchAll(); }, [status, source, from, to]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const [c, s, h] = await Promise.all([listCategories(), listSubcategories(), listActiveShareholders()]);
+        setCats(c); setSubs(s); setShs(h);
+      } catch (e:any) { toast.error(e.message || 'Gagal memuat master data'); }
+    })();
+  }, []);
+
+  async function fetchData() {
+    setLoading(true);
+    try {
+      const { rows, count } = await listExpenses({
+        month: month || undefined,
+        source, status,
+        category_id: categoryId !== 'all' ? Number(categoryId) : undefined,
+        subcategory_id: subcategoryId !== 'all' ? Number(subcategoryId) : undefined,
+        shareholder_id: shareholderId !== 'all' ? Number(shareholderId) : undefined,
+        page, pageSize,
+        q: undefined,
+        orderBy: 'expense_date', orderDir: 'desc',
+      });
+      setRows(rows); setCount(count);
+    } catch (e:any) {
+      toast.error(e.message || 'Gagal memuat data');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // fetch on filter change
+  useEffect(() => { fetchData(); /* eslint-disable-next-line */ }, [month, source, status, categoryId, subcategoryId, shareholderId, page, pageSize]);
+
+  // reset page when main filters change
+  useEffect(() => { setPage(1); /* eslint-disable-next-line */ }, [month, source, status, categoryId, subcategoryId, shareholderId]);
+
+  // keep subcategories synced
+  useEffect(() => {
+    loadSubs(categoryId);
+    // kalau ganti category, defaultkan subcategory ke 'all'
+    setSubcategoryId('all');
+  }, [categoryId]);
+
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(count / pageSize)), [count, pageSize]);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Expenses</h2>
         <Button asChild><Link href="/finance/expenses/new">New Expense</Link></Button>
       </div>
 
       <Card>
         <CardHeader><CardTitle>Filters</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3">
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3">
           <div>
-            <label className="text-sm text-muted-foreground">Source</label>
+            <label className="text-sm block mb-1">Month</label>
+            <Input type="month" value={month} onChange={(e)=>setMonth(e.target.value)} placeholder="YYYY-MM" />
+          </div>
+
+          <div>
+            <label className="text-sm block mb-1">Source</label>
             <Select value={source} onValueChange={(v:any)=>setSource(v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="All" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
                 <SelectItem value="RAB">RAB</SelectItem>
@@ -60,107 +125,102 @@ export default function ExpensesListPage(){
               </SelectContent>
             </Select>
           </div>
+
           <div>
-            <label className="text-sm text-muted-foreground">Status</label>
+            <label className="text-sm block mb-1">Status</label>
             <Select value={status} onValueChange={(v:any)=>setStatus(v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="All" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
-                <SelectItem value="draft">Draft</SelectItem>
                 <SelectItem value="posted">Posted</SelectItem>
+                <SelectItem value="draft">Draft</SelectItem>
                 <SelectItem value="void">Void</SelectItem>
               </SelectContent>
             </Select>
           </div>
+
           <div>
-            <label className="text-sm text-muted-foreground">From</label>
-            <Input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} />
+            <label className="text-sm block mb-1">Category</label>
+            <Select value={categoryId} onValueChange={(v)=>setCategoryId(v)}>
+              <SelectTrigger><SelectValue placeholder="All" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                {cats.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
+
           <div>
-            <label className="text-sm text-muted-foreground">To</label>
-            <Input type="date" value={to} onChange={(e)=>setTo(e.target.value)} />
+            <label className="text-sm block mb-1">Subcategory</label>
+            <Select value={subcategoryId} onValueChange={(v)=>setSubcategoryId(v)}>
+              <SelectTrigger><SelectValue placeholder={categoryId === 'all' ? 'All' : 'All'} /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                {subs
+                  .filter(s => categoryId === 'all' || s.category_id === Number(categoryId))
+                  .map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
-          <div className="flex items-end"><Button variant="outline" onClick={fetchAll}>Apply</Button></div>
+
+          <div>
+            <label className="text-sm block mb-1">Shareholder</label>
+            <Select value={shareholderId} onValueChange={(v)=>setShareholderId(v)}>
+              <SelectTrigger><SelectValue placeholder="All" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                {shs.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-sm">Page size</label>
+            <Select value={String(pageSize)} onValueChange={(v)=>setPageSize(Number(v))}>
+              <SelectTrigger className="w-[100px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {pageSizes.map(s => <SelectItem key={s} value={String(s)}>{s}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={()=>{
+                setMonth('');
+                setSource('all');
+                setStatus('all');
+                setCategoryId('all');
+                setSubcategoryId('all');
+                setShareholderId('all');
+                setPage(1);
+              }}
+            >
+              Reset
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>All Expenses</CardTitle></CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>From</TableHead>
-                  <TableHead>Vendor</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="w-[180px] text-right"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading && Array.from({length:6}).map((_,i)=>(
-                  <TableRow key={`s-${i}`}>
-                    <TableCell><div className="h-4 w-24 bg-muted animate-pulse rounded"/></TableCell>
-                    <TableCell><div className="h-4 w-14 bg-muted animate-pulse rounded"/></TableCell>
-                    <TableCell><div className="h-4 w-32 bg-muted animate-pulse rounded"/></TableCell>
-                    <TableCell><div className="h-4 w-24 bg-muted animate-pulse rounded"/></TableCell>
-                    <TableCell><div className="h-4 w-20 bg-muted animate-pulse rounded"/></TableCell>
-                    <TableCell className="text-right"><div className="h-4 w-24 bg-muted animate-pulse rounded ml-auto"/></TableCell>
-                    <TableCell><div className="h-5 w-12 bg-muted animate-pulse rounded"/></TableCell>
-                    <TableCell />
-                  </TableRow>
-                ))}
-                {!loading && rows.map(r=>(
-                  <TableRow key={r.id}>
-                    <TableCell>{r.expense_date}</TableCell>
-                    <TableCell>{r.source}</TableCell>
-                    <TableCell>
-                      {r.source==='RAB'   ? (r.shareholder_name || r.shareholder_id)
-                      : r.source==='PT'    ? (r.account_name     || r.account_id)
-                      : r.source==='PETTY' ? (r.cashbox_name     || r.cashbox_id)
-                      : '-' }
-                    </TableCell>
-                    <TableCell>{r.vendor || '-'}</TableCell>
-                    <TableCell>{r.category || '-'}</TableCell>
-                    <TableCell className="text-right">Rp {fmtID.format(r.amount)}</TableCell>
-                    <TableCell>
-                      {r.status==='posted'
-                        ? <Badge>posted</Badge>
-                        : r.status==='void'
-                        ? <Badge variant="secondary">void</Badge>
-                        : <Badge variant="outline">draft</Badge>}
-                    </TableCell>
-                    <TableCell className="text-right space-x-2">
-                      {r.status!=='posted' && (
-                        <Button size="sm" variant="outline"
-                          onClick={()=>setExpenseStatus(r.id,'posted').then(fetchAll).then(()=>toast.success('Posted')).catch((e:any)=>toast.error(e.message||'Gagal'))}>
-                          Post
-                        </Button>
-                      )}
-                      {r.status==='posted' && (
-                        <Button size="sm" variant="outline"
-                          onClick={()=>setExpenseStatus(r.id,'void').then(fetchAll).then(()=>toast.success('Voided')).catch((e:any)=>toast.error(e.message||'Gagal'))}>
-                          Void
-                        </Button>
-                      )}
-                      {r.status!=='posted' && (
-                        <Button size="sm" variant="ghost" className="text-red-600"
-                          onClick={()=>{ if(confirm('Hapus expense ini?')) deleteExpense(r.id).then(fetchAll).then(()=>toast.success('Dihapus')).catch((e:any)=>toast.error(e.message||'Gagal')); }}>
-                          Hapus
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {!loading && rows.length===0 && (
-                  <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-10">Tidak ada data</TableCell></TableRow>
-                )}
-              </TableBody>
-            </Table>
+        <CardHeader><CardTitle>Expenses</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <ExpenseTable
+            rows={rows}
+            loading={loading}
+            show={{ source: true, status: true, shareholder: true, category: true, subcategory: true, vendor: true, invoice: true, note: false, period: false }}
+            onRowClick={(r)=> router.push(`/finance/expenses/${r.id}`)}
+          />
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground">Total: <b>{fmtID.format(count)}</b> rows</div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" disabled={page<=1} onClick={()=>setPage(p=>p-1)}>Prev</Button>
+              <div className="text-sm">Page {page} / {Math.max(1, Math.ceil(count / pageSize))}</div>
+              <Button variant="outline" size="sm" disabled={page>=Math.max(1, Math.ceil(count / pageSize))} onClick={()=>setPage(p=>p+1)}>Next</Button>
+            </div>
           </div>
         </CardContent>
       </Card>
