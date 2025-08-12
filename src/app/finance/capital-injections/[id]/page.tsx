@@ -14,6 +14,7 @@ import {
   setPlanStatus,
   listObligations,
   updateObligation,
+  snapshotObligations,          // <— NEW
 } from "@/features/capital-injections/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -40,7 +41,7 @@ export default function CapitalInjectionDetailPage() {
   const [obligationRows, setObligationRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // add-contribution form (tab Contributions)
+  // add-contribution form
   const [shareholderId, setShareholderId] = useState("");
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState("");
@@ -53,7 +54,7 @@ export default function CapitalInjectionDetailPage() {
   const [editAmount, setEditAmount] = useState<string>("");
   const [editReason, setEditReason] = useState<string>("");
 
-  // QUICK ADD dialog (Overview)
+  // QUICK ADD dialog
   const [qaOpen, setQaOpen] = useState(false);
   const [qaShId, setQaShId] = useState<number | null>(null);
   const [qaShName, setQaShName] = useState<string>("");
@@ -77,7 +78,6 @@ export default function CapitalInjectionDetailPage() {
       toast.error(e.message || "Gagal memuat");
     } finally { setLoading(false); }
   }
-
   useEffect(() => { if (Number.isFinite(id)) fetchAll(); }, [id]);
 
   const totals = useMemo(() => {
@@ -93,21 +93,29 @@ export default function CapitalInjectionDetailPage() {
   async function onActivate() {
     try {
       await activatePlan(id);
-      toast.success("Plan di-activate & obligations disnapshot");
+      toast.success("Plan di-activate & snapshot dibuat bila belum ada");
       fetchAll();
     } catch (e: any) { toast.error(e.message || "Gagal activate"); }
   }
-
   async function onClose() {
     if (!confirm("Tutup plan ini?")) return;
     try { await setPlanStatus(id, "closed"); toast.success("Plan ditutup"); fetchAll(); }
     catch (e: any) { toast.error(e.message || "Gagal menutup"); }
   }
-
   async function onReopen() {
     if (!confirm("Buka kembali plan ini?")) return;
     try { await setPlanStatus(id, "active"); toast.success("Plan dibuka kembali"); fetchAll(); }
     catch (e: any) { toast.error(e.message || "Gagal membuka"); }
+  }
+
+  async function onSnapshot(replace: boolean) {
+    try {
+      await snapshotObligations(id, replace);
+      toast.success(replace ? 'Snapshot di-regenerate dari ownership' : 'Snapshot dibuat');
+      fetchAll();
+    } catch (e: any) {
+      toast.error(e.message || 'Gagal snapshot');
+    }
   }
 
   async function onAddContribution(e: React.FormEvent) {
@@ -131,7 +139,6 @@ export default function CapitalInjectionDetailPage() {
     try { await setContributionStatus(contrId, "void", "void by admin"); toast.success("Di-void"); fetchAll(); }
     catch (e: any) { toast.error(e.message || "Gagal void"); }
   }
-
   async function onDeleteContribution(contrId: number) {
     if (!confirm("Hapus contribution ini?")) return;
     try { await deleteContribution(contrId); toast.success("Dihapus"); fetchAll(); }
@@ -141,7 +148,6 @@ export default function CapitalInjectionDetailPage() {
   function openEditOb(row: any) {
     setEditObId(row.id); setEditAmount(String(row.obligation_amount || "")); setEditReason(""); setEditOpen(true);
   }
-
   async function saveEditOb() {
     if (!editObId) return;
     const amt = Number(editAmount);
@@ -154,7 +160,15 @@ export default function CapitalInjectionDetailPage() {
     } catch (e: any) { toast.error(e.message || "Gagal memperbarui"); }
   }
 
-  // === Quick Add handlers ===
+  // Quick add
+  const [qaOpen, setQaOpen] = useState(false);
+  const [qaShId, setQaShId] = useState<number | null>(null);
+  const [qaShName, setQaShName] = useState<string>("");
+  const [qaAmount, setQaAmount] = useState<string>("");
+  const [qaDate, setQaDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [qaNote, setQaNote] = useState<string>("");
+  const [qaSaving, setQaSaving] = useState(false);
+
   function openQuickAdd(row: any) {
     setQaShId(row.shareholder_id);
     setQaShName(row.shareholder_name || String(row.shareholder_id));
@@ -164,7 +178,6 @@ export default function CapitalInjectionDetailPage() {
     setQaNote("");
     setQaOpen(true);
   }
-
   async function saveQuickAdd() {
     if (!qaShId) return;
     const amt = Number(qaAmount);
@@ -211,6 +224,11 @@ export default function CapitalInjectionDetailPage() {
               {plan.status === "draft" && (
                 <Button onClick={onActivate}>Activate Plan</Button>
               )}
+              {plan.status !== "closed" && (
+                <Button variant="outline" onClick={() => onSnapshot(true)}>
+                  Generate / Regenerate Snapshot
+                </Button>
+              )}
               {plan.status === "active" && (
                 <Button variant="outline" onClick={onClose}>Close</Button>
               )}
@@ -255,7 +273,7 @@ export default function CapitalInjectionDetailPage() {
         <TabsContent value="overview" className="space-y-4 mt-4">
           {plan.status === "draft" && (
             <div className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg p-3">
-              Plan masih <b>draft</b>. Aktifkan plan untuk membuat snapshot kewajiban per shareholder.
+              Plan masih <b>draft</b>. Aktifkan atau klik <b>Generate / Regenerate Snapshot</b> setelah plan aktif untuk membuat kewajiban per shareholder berdasarkan ownership snapshot.
             </div>
           )}
           <Card>
@@ -271,7 +289,7 @@ export default function CapitalInjectionDetailPage() {
                       <TableHead className="text-right">Paid</TableHead>
                       <TableHead className="text-right">Remaining</TableHead>
                       <TableHead>Status</TableHead>
-                      <TableHead className="text-right w-[140px]">Aksi</TableHead>{/* NEW */}
+                      <TableHead className="text-right w-[140px]">Aksi</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -293,12 +311,7 @@ export default function CapitalInjectionDetailPage() {
                           <TableCell className="text-right">Rp {fmtID.format(r.remaining)}</TableCell>
                           <TableCell>{badge}</TableCell>
                           <TableCell className="text-right">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openQuickAdd(r)}
-                              disabled={plan.status !== "active"}
-                            >
+                            <Button size="sm" variant="outline" onClick={() => openQuickAdd(r)} disabled={plan.status !== "active"}>
                               Tambah cicilan
                             </Button>
                           </TableCell>
@@ -389,7 +402,12 @@ export default function CapitalInjectionDetailPage() {
                             <Button size="sm" variant="outline" onClick={() => onVoidContribution(c.id)}>Void</Button>
                           )}
                           {c.status !== 'posted' && (
-                            <Button size="sm" variant="outline" onClick={() => setContributionStatus(c.id, 'posted').then(fetchAll).then(() => toast.success('Di-posting')).catch((e:any)=>toast.error(e.message||'Gagal'))}>Post</Button>
+                            <Button size="sm" variant="outline" onClick={() =>
+                              setContributionStatus(c.id, 'posted')
+                                .then(fetchAll)
+                                .then(() => toast.success('Di-posting'))
+                                .catch((e:any)=>toast.error(e.message||'Gagal'))
+                            }>Post</Button>
                           )}
                           {c.status !== 'posted' && (
                             <Button size="sm" variant="ghost" className="text-red-600" onClick={() => onDeleteContribution(c.id)}>Hapus</Button>
@@ -415,7 +433,6 @@ export default function CapitalInjectionDetailPage() {
               Aktifkan plan untuk membuat dan mengedit obligations per shareholder.
             </div>
           )}
-
           {plan.status !== 'draft' && (
             <Card>
               <CardHeader><CardTitle>Obligations (Snapshot)</CardTitle></CardHeader>
@@ -458,9 +475,7 @@ export default function CapitalInjectionDetailPage() {
       {/* Edit Obligation Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Obligation</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Edit Obligation</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
               <Label>Amount (IDR)</Label>
@@ -481,9 +496,7 @@ export default function CapitalInjectionDetailPage() {
       {/* Quick Add Contribution Dialog */}
       <Dialog open={qaOpen} onOpenChange={setQaOpen}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Tambah cicilan — {qaShName || "-"}</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Tambah cicilan — {qaShName || "-"}</DialogTitle></DialogHeader>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Amount (IDR)</Label>

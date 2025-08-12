@@ -12,6 +12,7 @@ import {
 
 const fmt = new Intl.NumberFormat('id-ID');
 
+/* ---------- Types ---------- */
 type Expense = {
   expense_date: string;
   amount: number;
@@ -20,10 +21,9 @@ type Expense = {
   cashbox_id: number | null;
   shareholder_id: number | null;
 };
-
-type PTTopup  = { amount: number; topup_date: string };
 type PettyTxn = { type: 'topup'|'settlement'|'adjust_in'|'adjust_out'; amount: number; txn_date: string };
-type RABAlloc = { shareholder_id: number; amount: number };
+type PTTopup  = { amount: number; topup_date: string };
+type RABAlloc = { shareholder_id: number; amount: number; alloc_date: string };
 type Contribution = { shareholder_id: number; amount: number; transfer_date: string; status: string };
 type Obligation  = { shareholder_id: number; obligation_amount: number };
 type Shareholder = { id: number; name: string };
@@ -32,29 +32,43 @@ type CashflowRow = { month: string; in: number; out: number; net: number };
 type RABShareRow = { shareholder: string; allocated: number; actual: number; balance: number };
 type UnpaidRow    = { shareholder: string; obligation: number; paid: number; outstanding: number; last_payment?: string | null };
 
+/* ---------- Helpers ---------- */
+const sum = (xs:number[]) => xs.reduce((a,b)=>a+b,0);
+const startOfMonth = (d=new Date()) => new Date(d.getFullYear(), d.getMonth(), 1);
+const addMonths = (d:Date,n:number)=>{const x=new Date(d);x.setMonth(x.getMonth()+n);return x;};
+const isTransferToPetty = (e:Expense) => (e.cashbox_id !== null) && (e.source === 'PT' || e.source === 'RAB');
+
+/* ---------- Component ---------- */
 export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) {
   const [loading, setLoading] = useState(true);
 
   // raw data
   const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [ptTopups, setPtTopups] = useState<PTTopup[]>([]);
   const [pettyTxns, setPettyTxns] = useState<PettyTxn[]>([]);
+  const [ptTopups, setPtTopups]   = useState<PTTopup[]>([]);
   const [rabAllocs, setRabAllocs] = useState<RABAlloc[]>([]);
-  const [contribs, setContribs] = useState<Contribution[]>([]);
-  const [obligs, setObligs]     = useState<Obligation[]>([]);
-  const [holders, setHolders]   = useState<Shareholder[]>([]);
+  const [contribs, setContribs]   = useState<Contribution[]>([]);
+  const [obligs, setObligs]       = useState<Obligation[]>([]);
+  const [holders, setHolders]     = useState<Shareholder[]>([]);
 
-  // load all-time data
   async function load() {
     setLoading(true);
     try {
-      const [{ data: ex, error: e1 }, { data: pt, error: e2 }, { data: px, error: e3 },
-             { data: ra, error: e4 }, { data: cc, error: e5 }, { data: ob, error: e6 },
-             { data: sh, error: e7 }] = await Promise.all([
-        supabase.from('expenses').select('expense_date,amount,source,status,cashbox_id,shareholder_id').eq('status','posted'),
-        supabase.from('pt_topups').select('amount,topup_date'),
+      const [
+        { data: ex, error: e1 },
+        { data: px, error: e2 },
+        { data: pt, error: e3 },
+        { data: ra, error: e4 },
+        { data: cc, error: e5 },
+        { data: ob, error: e6 },
+        { data: sh, error: e7 },
+      ] = await Promise.all([
+        supabase.from('expenses')
+          .select('expense_date,amount,source,status,cashbox_id,shareholder_id')
+          .eq('status','posted'),
         supabase.from('petty_cash_txns').select('type,amount,txn_date'),
-        supabase.from('rab_allocations').select('shareholder_id,amount'),
+        supabase.from('pt_topups').select('amount,topup_date'),
+        supabase.from('rab_allocations').select('shareholder_id,amount,alloc_date'),
         supabase.from('capital_contributions').select('shareholder_id,amount,transfer_date,status'),
         supabase.from('ci_obligations').select('shareholder_id,obligation_amount'),
         supabase.from('shareholders').select('id,name'),
@@ -62,8 +76,8 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
       if (e1||e2||e3||e4||e5||e6||e7) throw (e1||e2||e3||e4||e5||e6||e7);
 
       setExpenses((ex||[]) as Expense[]);
-      setPtTopups((pt||[]) as PTTopup[]);
       setPettyTxns((px||[]) as PettyTxn[]);
+      setPtTopups((pt||[]) as PTTopup[]);
       setRabAllocs((ra||[]) as RABAlloc[]);
       setContribs((cc||[]) as Contribution[]);
       setObligs((ob||[]) as Obligation[]);
@@ -72,61 +86,53 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
   }
   useEffect(()=>{ load(); /* eslint-disable-next-line */ },[refreshKey]);
 
-  // utils
-  const sum = (xs:number[]) => xs.reduce((a,b)=>a+b,0);
-  const isTransferToPetty = (e:Expense) => (e.source==='RAB' || e.source==='PT') && e.cashbox_id!==null;
-  const posted = useMemo(()=>expenses.filter(e=>e.status==='posted'),[expenses]);
+  const posted = expenses; // sudah difilter posted di query
 
-  // balances (as-of / all-time)
-  const ptBalance = useMemo(()=>{
-    const inflowPT = sum(ptTopups.map(t=>+t.amount)) +
-                     sum(pettyTxns.filter(t=>t.type==='settlement').map(t=>+t.amount));
-    const outPT = sum(posted.filter(e=>e.source==='PT').map(e=>+e.amount));
-    return inflowPT - outPT;
-  },[ptTopups, pettyTxns, posted]);
+  /* ---------- Totals (lifetime) ---------- */
+  // In
+  const ptIn = useMemo(()=>{
+    const topups = sum(ptTopups.map(t=>+t.amount));
+    const contributions = sum(contribs.filter(c=>c.status==='posted').map(c=>+c.amount));
+    const settlements = sum(pettyTxns.filter(t=>t.type==='settlement').map(t=>+t.amount));
+    return topups + contributions + settlements;
+  },[ptTopups, contribs, pettyTxns]);
 
-  const pettyBalance = useMemo(()=>{
-    const inPetty  = sum(pettyTxns.filter(t=>t.type==='topup'||t.type==='adjust_in').map(t=>+t.amount));
-    const outPetty = sum(pettyTxns.filter(t=>t.type==='settlement'||t.type==='adjust_out').map(t=>+t.amount));
-    const pettySpend = sum(posted.filter(e=>e.source==='PETTY').map(e=>+e.amount));
-    return inPetty - outPetty - pettySpend;
+  const rabIn = useMemo(()=> sum(rabAllocs.map(a=>+a.amount)), [rabAllocs]);
+
+  const pettyIn = useMemo(()=>{
+    const pettyTopup = sum(pettyTxns.filter(t=>t.type==='topup' || t.type==='adjust_in').map(t=>+t.amount));
+    const transferExp = sum(posted.filter(isTransferToPetty).map(e=>+e.amount));
+    return pettyTopup + transferExp;
   },[pettyTxns, posted]);
 
-  const rabBalanceTotal = useMemo(()=>{
-    const alloc = sum(rabAllocs.map(a=>+a.amount)); // treat allocations as RAB "in"
-    const actual = sum(posted.filter(e=>e.source==='RAB' && !isTransferToPetty(e)).map(e=>+e.amount));
-    return alloc - actual;
-  },[rabAllocs, posted]);
-
-  const cashTotal = ptBalance + pettyBalance;
-
-  // summary table per source (In/Out/Balance) — all-time
-  const inflowBySource = useMemo(()=>({
-    PT:    sum(ptTopups.map(t=>+t.amount)) + sum(pettyTxns.filter(t => t.type==='settlement').map(t=>+t.amount)),
-    RAB:   sum(rabAllocs.map(a=>+a.amount)), // allocations are "in"
-    PETTY: sum(pettyTxns.filter(t => t.type==='topup'||t.type==='adjust_in').map(t=>+t.amount)),
-  }),[ptTopups, pettyTxns, rabAllocs]);
-
-  const outflowBySource = useMemo(()=>({
-    PT:    sum(posted.filter(e=>e.source==='PT').map(e=>+e.amount)),
-    RAB:   sum(posted.filter(e=>e.source==='RAB' && !isTransferToPetty(e)).map(e=>+e.amount)),
-    PETTY: sum(posted.filter(e=>e.source==='PETTY').map(e=>+e.amount)) +
-           sum(pettyTxns.filter(t => t.type==='settlement'||t.type==='adjust_out').map(t=>+t.amount)),
-  }),[posted, pettyTxns]);
+  // Out (exclude transfer-to-petty agar tak double count)
+  const outPT    = useMemo(()=> sum(posted.filter(e=>e.source==='PT'    && !isTransferToPetty(e)).map(e=>+e.amount)), [posted]);
+  const outRAB   = useMemo(()=> sum(posted.filter(e=>e.source==='RAB'   && !isTransferToPetty(e)).map(e=>+e.amount)), [posted]);
+  const outPetty = useMemo(()=>{
+    const pettySpend = sum(posted.filter(e=>e.source==='PETTY').map(e=>+e.amount));
+    const settleOut  = sum(pettyTxns.filter(t=>t.type==='settlement' || t.type==='adjust_out').map(t=>+t.amount));
+    return pettySpend + settleOut;
+  },[posted, pettyTxns]);
 
   const ioRows = [
-    { name: 'PT',    in: inflowBySource.PT,    out: outflowBySource.PT    },
-    { name: 'RAB',   in: inflowBySource.RAB,   out: outflowBySource.RAB   },
-    { name: 'Petty', in: inflowBySource.PETTY, out: outflowBySource.PETTY },
+    { name: 'PT',    in: ptIn,  out: outPT },
+    { name: 'RAB',   in: rabIn, out: outRAB },
+    { name: 'Petty', in: pettyIn, out: outPetty },
   ];
-  const ioTotal = { in: sum(ioRows.map(r=>r.in)), out: sum(ioRows.map(r=>r.out)) };
+  const ioTotal = {
+    in: sum(ioRows.map(r=>r.in)),
+    out: sum(ioRows.map(r=>r.out)),
+  };
 
-  // cashflow 6 months (visual saja)
+  /* ---------- KPI ---------- */
+  const ptBalance = ptIn - outPT;
+  const pettyBalance = pettyIn - outPetty;
+  const rabBalanceTotal = rabIn - outRAB;
+  const cashTotal = ptBalance + pettyBalance;
+
+  /* ---------- Cashflow 6 bulan ---------- */
   const today = new Date();
-  const startOfMonth = (d=new Date()) => new Date(d.getFullYear(), d.getMonth(), 1);
-  const addMonths = (d:Date,n:number)=>{const x=new Date(d);x.setMonth(x.getMonth()+n);return x;};
   const monthStart = addMonths(startOfMonth(today), -5);
-
   const flow: CashflowRow[] = useMemo(()=>{
     const rows: CashflowRow[] = [];
     for (let i=0;i<6;i++){
@@ -137,14 +143,22 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
       const d=new Date(ds);
       return (d.getFullYear()*12 + d.getMonth()) - (monthStart.getFullYear()*12 + monthStart.getMonth());
     };
+
+    // In side
     for (const t of ptTopups){ const i=idx(t.topup_date); if(i>=0&&i<6) rows[i].in += +t.amount; }
-    for (const t of pettyTxns){ if(t.type!=='settlement') continue; const i=idx(t.txn_date); if(i>=0&&i<6) rows[i].in += +t.amount; }
+    for (const c of contribs.filter(c=>c.status==='posted')){ const i=idx(c.transfer_date); if(i>=0&&i<6) rows[i].in += +c.amount; }
+    for (const t of pettyTxns){ if(t.type==='settlement' || t.type==='topup' || t.type==='adjust_in'){ const i=idx(t.txn_date); if(i>=0&&i<6) rows[i].in += +t.amount; } }
+    for (const a of rabAllocs){ const i=idx(a.alloc_date); if(i>=0&&i<6) rows[i].in += +a.amount; }
+
+    // Out side (exclude transfer-to-petty)
     for (const e of posted){ if(isTransferToPetty(e)) continue; const i=idx(e.expense_date); if(i>=0&&i<6) rows[i].out += +e.amount; }
+    for (const t of pettyTxns){ if(t.type==='settlement' || t.type==='adjust_out'){ const i=idx(t.txn_date); if(i>=0&&i<6) rows[i].out += +t.amount; } }
+
     for (const r of rows) r.net = r.in - r.out;
     return rows;
-  },[ptTopups, pettyTxns, posted]);
+  },[ptTopups, contribs, pettyTxns, rabAllocs, posted]);
 
-  // RAB per shareholder (allocated/actual/balance)
+  /* ---------- RAB per shareholder ---------- */
   const rabPerHolder: RABShareRow[] = useMemo(()=>{
     const name = new Map(holders.map(h=>[h.id,h.name]));
     const allocBy = new Map<number, number>();
@@ -164,7 +178,7 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
     })).sort((a,b)=>a.balance-b.balance);
   },[holders, rabAllocs, posted]);
 
-  // Unpaid summary (obligation vs contributions)
+  /* ---------- Unpaid summary ---------- */
   const unpaid: UnpaidRow[] = useMemo(()=>{
     const name = new Map(holders.map(h=>[h.id,h.name]));
     const obligBy = new Map<number, number>();
@@ -191,7 +205,7 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">Financial Overview</div>
+        <div className="text-sm text-muted-foreground">Financial</div>
         <Button variant="outline" size="sm" onClick={load}>
           <RefreshCcw className="h-4 w-4 mr-2" /> Refresh
         </Button>
@@ -220,14 +234,14 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
                 <Legend />
                 <Area type="monotone" dataKey="in"  name="In"  stroke="#10b981" fill="#10b981" fillOpacity={0.18} strokeWidth={2} dot={false} />
                 <Area type="monotone" dataKey="out" name="Out" stroke="#ef4444" fill="#ef4444" fillOpacity={0.18} strokeWidth={2} dot={false} />
-                <Area type="monotone" dataKey="net" name="Net" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.10} strokeWidth={2} dot={false} />
+                <Area type="monotone" dataKey="net" name="Balance" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.10} strokeWidth={2} dot={false} />
               </AreaChart>
             </ResponsiveContainer>
           )}
         </CardContent>
       </Card>
 
-      {/* Summary table (no Balances card) */}
+      {/* Summary In/Out/Balance */}
       <Card>
         <CardHeader><CardTitle>Summary Pemasukan & Pengeluaran</CardTitle></CardHeader>
         <CardContent>
@@ -267,8 +281,8 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
             </table>
           </div>
           <div className="text-xs text-muted-foreground mt-2">
-            * In: PT = Topups + Petty settlement; RAB = Allocations; Petty = Topup/Adjust In.
-            Out: Expenses posted (transfer ke petty dikecualikan) + Settlement/Adjust Out petty.
+            * In = <b>PT</b>: Contributions (posted) + PT Topups + Petty Settlement; <b>RAB</b>: Allocations; <b>Petty</b>: Topup/Adjust In + transfer ke petty (dari PT/RAB).
+            Out = Expenses posted (transfer ke petty dikecualikan) + Petty Settlement/Adjust Out.
           </div>
         </CardContent>
       </Card>
@@ -321,7 +335,7 @@ export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) 
   );
 }
 
-/* mini components */
+/* ---------- Mini Components ---------- */
 function KPI({ title, value, hint, icon }: { title: string; value: string; hint?: string; icon?: React.ReactNode }) {
   return (
     <Card>
