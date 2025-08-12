@@ -12,8 +12,6 @@ import {
 
 const fmt = new Intl.NumberFormat('id-ID');
 
-type Period = 'MTD'|'QTD'|'YTD';
-
 type Expense = {
   expense_date: string;
   amount: number;
@@ -34,7 +32,7 @@ type CashflowRow = { month: string; in: number; out: number; net: number };
 type RABShareRow = { shareholder: string; allocated: number; actual: number; balance: number };
 type UnpaidRow    = { shareholder: string; obligation: number; paid: number; outstanding: number; last_payment?: string | null };
 
-export default function FinancialTab({ period='MTD', refreshKey=0 }: { period?: Period; refreshKey?: number }) {
+export default function FinancialTab({ refreshKey=0 }: { refreshKey?: number }) {
   const [loading, setLoading] = useState(true);
 
   // raw data
@@ -46,21 +44,7 @@ export default function FinancialTab({ period='MTD', refreshKey=0 }: { period?: 
   const [obligs, setObligs]     = useState<Obligation[]>([]);
   const [holders, setHolders]   = useState<Shareholder[]>([]);
 
-  // date helpers
-  const today = new Date();
-  const startOfMonth = (d=new Date()) => new Date(d.getFullYear(), d.getMonth(), 1);
-  const startOfQuarter = (d=new Date()) => new Date(d.getFullYear(), Math.floor(d.getMonth()/3)*3, 1);
-  const startOfYear = (d=new Date()) => new Date(d.getFullYear(), 0, 1);
-  const addMonths = (d:Date,n:number)=>{const x=new Date(d);x.setMonth(x.getMonth()+n);return x;};
-  const iso = (d:Date)=>d.toISOString().slice(0,10);
-
-  const periodStart = useMemo(()=>{
-    if (period==='MTD') return startOfMonth(today);
-    if (period==='QTD') return startOfQuarter(today);
-    return startOfYear(today);
-  },[period]);
-
-  // load
+  // load all-time data
   async function load() {
     setLoading(true);
     try {
@@ -86,17 +70,14 @@ export default function FinancialTab({ period='MTD', refreshKey=0 }: { period?: 
       setHolders((sh||[]) as Shareholder[]);
     } finally { setLoading(false); }
   }
-  useEffect(()=>{ load(); /* eslint-disable-next-line */ },[period, refreshKey]);
+  useEffect(()=>{ load(); /* eslint-disable-next-line */ },[refreshKey]);
 
   // utils
   const sum = (xs:number[]) => xs.reduce((a,b)=>a+b,0);
-  const between = (dateStr:string, from:Date, to:Date) => {
-    const d = new Date(dateStr); return d>=from && d<=to;
-  };
   const isTransferToPetty = (e:Expense) => (e.source==='RAB' || e.source==='PT') && e.cashbox_id!==null;
   const posted = useMemo(()=>expenses.filter(e=>e.status==='posted'),[expenses]);
 
-  // balances
+  // balances (as-of / all-time)
   const ptBalance = useMemo(()=>{
     const inflowPT = sum(ptTopups.map(t=>+t.amount)) +
                      sum(pettyTxns.filter(t=>t.type==='settlement').map(t=>+t.amount));
@@ -112,55 +93,40 @@ export default function FinancialTab({ period='MTD', refreshKey=0 }: { period?: 
   },[pettyTxns, posted]);
 
   const rabBalanceTotal = useMemo(()=>{
-    const alloc = sum(rabAllocs.map(a=>+a.amount));
+    const alloc = sum(rabAllocs.map(a=>+a.amount)); // treat allocations as RAB "in"
     const actual = sum(posted.filter(e=>e.source==='RAB' && !isTransferToPetty(e)).map(e=>+e.amount));
     return alloc - actual;
   },[rabAllocs, posted]);
 
   const cashTotal = ptBalance + pettyBalance;
 
-  // period inflow/outflow
-  const from = periodStart, to = today;
-  const pemasukanPeriode = useMemo(()=>{
-    const inPT = sum(ptTopups.filter(t=>between(t.topup_date, from, to)).map(t=>+t.amount));
-    const settle = sum(pettyTxns.filter(t=>t.type==='settlement' && between(t.txn_date, from, to)).map(t=>+t.amount));
-    return inPT + settle;
-  },[ptTopups, pettyTxns, from, to]);
-
-  const pengeluaranPeriode = useMemo(()=>{
-    return sum(posted
-      .filter(e=>between(e.expense_date, from, to))
-      .filter(e=>!isTransferToPetty(e))
-      .map(e=>+e.amount));
-  },[posted, from, to]);
-
-  // summary table per source (In/Out/Net)
+  // summary table per source (In/Out/Balance) — all-time
   const inflowBySource = useMemo(()=>({
-    PT:   sum(ptTopups.filter(t => between(t.topup_date, from, to)).map(t=>+t.amount)) +
-          sum(pettyTxns.filter(t => t.type==='settlement' && between(t.txn_date, from, to)).map(t=>+t.amount)),
-    RAB:  0,
-    PETTY:sum(pettyTxns.filter(t => (t.type==='topup'||t.type==='adjust_in') && between(t.txn_date, from, to)).map(t=>+t.amount)),
-  }),[ptTopups, pettyTxns, from, to]);
+    PT:    sum(ptTopups.map(t=>+t.amount)) + sum(pettyTxns.filter(t => t.type==='settlement').map(t=>+t.amount)),
+    RAB:   sum(rabAllocs.map(a=>+a.amount)), // allocations are "in"
+    PETTY: sum(pettyTxns.filter(t => t.type==='topup'||t.type==='adjust_in').map(t=>+t.amount)),
+  }),[ptTopups, pettyTxns, rabAllocs]);
 
   const outflowBySource = useMemo(()=>({
-    PT:    sum(posted.filter(e=>e.source==='PT'    && between(e.expense_date, from, to)).map(e=>+e.amount)),
-    RAB:   sum(posted.filter(e=>e.source==='RAB'   && between(e.expense_date, from, to) && !isTransferToPetty(e)).map(e=>+e.amount)),
-    PETTY: sum(posted.filter(e=>e.source==='PETTY' && between(e.expense_date, from, to)).map(e=>+e.amount)) +
-           sum(pettyTxns.filter(t => (t.type==='settlement'||t.type==='adjust_out') && between(t.txn_date, from, to)).map(t=>+t.amount)),
-  }),[posted, pettyTxns, from, to]);
+    PT:    sum(posted.filter(e=>e.source==='PT').map(e=>+e.amount)),
+    RAB:   sum(posted.filter(e=>e.source==='RAB' && !isTransferToPetty(e)).map(e=>+e.amount)),
+    PETTY: sum(posted.filter(e=>e.source==='PETTY').map(e=>+e.amount)) +
+           sum(pettyTxns.filter(t => t.type==='settlement'||t.type==='adjust_out').map(t=>+t.amount)),
+  }),[posted, pettyTxns]);
 
   const ioRows = [
     { name: 'PT',    in: inflowBySource.PT,    out: outflowBySource.PT    },
     { name: 'RAB',   in: inflowBySource.RAB,   out: outflowBySource.RAB   },
     { name: 'Petty', in: inflowBySource.PETTY, out: outflowBySource.PETTY },
   ];
-  const ioTotal = {
-    in: sum(ioRows.map(r=>r.in)),
-    out: sum(ioRows.map(r=>r.out)),
-  };
+  const ioTotal = { in: sum(ioRows.map(r=>r.in)), out: sum(ioRows.map(r=>r.out)) };
 
-  // cashflow 6 months
+  // cashflow 6 months (visual saja)
+  const today = new Date();
+  const startOfMonth = (d=new Date()) => new Date(d.getFullYear(), d.getMonth(), 1);
+  const addMonths = (d:Date,n:number)=>{const x=new Date(d);x.setMonth(x.getMonth()+n);return x;};
   const monthStart = addMonths(startOfMonth(today), -5);
+
   const flow: CashflowRow[] = useMemo(()=>{
     const rows: CashflowRow[] = [];
     for (let i=0;i<6;i++){
@@ -198,7 +164,7 @@ export default function FinancialTab({ period='MTD', refreshKey=0 }: { period?: 
     })).sort((a,b)=>a.balance-b.balance);
   },[holders, rabAllocs, posted]);
 
-  // Unpaid summary
+  // Unpaid summary (obligation vs contributions)
   const unpaid: UnpaidRow[] = useMemo(()=>{
     const name = new Map(holders.map(h=>[h.id,h.name]));
     const obligBy = new Map<number, number>();
@@ -225,13 +191,13 @@ export default function FinancialTab({ period='MTD', refreshKey=0 }: { period?: 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">Financial — {period}</div>
+        <div className="text-sm text-muted-foreground">Financial Overview</div>
         <Button variant="outline" size="sm" onClick={load}>
           <RefreshCcw className="h-4 w-4 mr-2" /> Refresh
         </Button>
       </div>
 
-      {/* KPI: Cash + RAB */}
+      {/* KPI: Cash & RAB */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <KPI title="Cash & Equivalents"
              value={`Rp ${fmt.format(cashTotal)}`}
@@ -261,61 +227,51 @@ export default function FinancialTab({ period='MTD', refreshKey=0 }: { period?: 
         </CardContent>
       </Card>
 
-      {/* Summary table + Balances */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        <Card className="lg:col-span-3">
-          <CardHeader><CardTitle>Summary Pemasukan & Pengeluaran</CardTitle></CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto rounded-md border">
-              <table className="w-full table-fixed">
-                <colgroup>
-                  <col className="w-[28%]" /><col className="w-[24%]" /><col className="w-[24%]" /><col className="w-[24%]" />
-                </colgroup>
-                <thead className="bg-muted/50 text-sm">
-                  <tr>
-                    <th className="text-left px-3 py-2">Source</th>
-                    <th className="text-right px-3 py-2">In</th>
-                    <th className="text-right px-3 py-2">Out</th>
-                    <th className="text-right px-3 py-2">Net</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm">
-                  {ioRows.map((r)=>(
-                    <tr key={r.name} className="border-t">
-                      <td className="px-3 py-2">{r.name}</td>
-                      <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(r.in)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(r.out)}</td>
-                      <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${r.in-r.out<0?'text-red-600':''}`}>
-                        Rp {fmt.format(r.in - r.out)}
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="border-t bg-muted/30 font-medium">
-                    <td className="px-3 py-2">Total</td>
-                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(ioTotal.in)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(ioTotal.out)}</td>
-                    <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${ioTotal.in-ioTotal.out<0?'text-red-600':''}`}>
-                      Rp {fmt.format(ioTotal.in - ioTotal.out)}
+      {/* Summary table (no Balances card) */}
+      <Card>
+        <CardHeader><CardTitle>Summary Pemasukan & Pengeluaran</CardTitle></CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto rounded-md border">
+            <table className="w-full table-fixed">
+              <colgroup>
+                <col className="w-[28%]" /><col className="w-[24%]" /><col className="w-[24%]" /><col className="w-[24%]" />
+              </colgroup>
+              <thead className="bg-muted/50 text-sm">
+                <tr>
+                  <th className="text-left px-3 py-2">Source</th>
+                  <th className="text-right px-3 py-2">In</th>
+                  <th className="text-right px-3 py-2">Out</th>
+                  <th className="text-right px-3 py-2">Balance</th>
+                </tr>
+              </thead>
+              <tbody className="text-sm">
+                {ioRows.map((r)=>(
+                  <tr key={r.name} className="border-t">
+                    <td className="px-3 py-2">{r.name}</td>
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(r.in)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(r.out)}</td>
+                    <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${(r.in-r.out)<0?'text-red-600':''}`}>
+                      Rp {fmt.format(r.in - r.out)}
                     </td>
                   </tr>
-                </tbody>
-              </table>
-            </div>
-            <div className="text-xs text-muted-foreground mt-2">
-              * In = PT Topups + Petty Settlement (periode). Out = Expenses posted (transfer ke petty dikecualikan) + Settlement/Adjust Out petty.
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-2">
-          <CardHeader><CardTitle>Balances</CardTitle></CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <RowKV k="PT"    v={`Rp ${fmt.format(ptBalance)}`} />
-            <RowKV k="RAB"   v={`Rp ${fmt.format(rabBalanceTotal)}`} />
-            <RowKV k="Petty" v={`Rp ${fmt.format(pettyBalance)}`} />
-          </CardContent>
-        </Card>
-      </div>
+                ))}
+                <tr className="border-t bg-muted/30 font-medium">
+                  <td className="px-3 py-2">Total</td>
+                  <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(ioTotal.in)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">Rp {fmt.format(ioTotal.out)}</td>
+                  <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${(ioTotal.in-ioTotal.out)<0?'text-red-600':''}`}>
+                    Rp {fmt.format(ioTotal.in - ioTotal.out)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="text-xs text-muted-foreground mt-2">
+            * In: PT = Topups + Petty settlement; RAB = Allocations; Petty = Topup/Adjust In.
+            Out: Expenses posted (transfer ke petty dikecualikan) + Settlement/Adjust Out petty.
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Unpaid Summary */}
       <Card>
@@ -377,15 +333,6 @@ function KPI({ title, value, hint, icon }: { title: string; value: string; hint?
         {hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
       </CardContent>
     </Card>
-  );
-}
-
-function RowKV({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-muted-foreground">{k}</span>
-      <span className="font-medium tabular-nums whitespace-nowrap">{v}</span>
-    </div>
   );
 }
 

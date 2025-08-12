@@ -11,10 +11,9 @@ const fmt = new Intl.NumberFormat('id-ID');
 
 // ---------- Types ----------
 type Shareholder = { id: number; name: string; ownership_percent: number };
-type Injection = { id: number; period: string | null; created_at: string };
+type Injection = { id: number; period: string | null; created_at: string; target_total: number };
 type Obligation = { capital_injection_id: number; shareholder_id: number; obligation_amount: number };
 type Contribution = { shareholder_id: number; amount: number; transfer_date: string; status: string };
-
 type RABAlloc = { shareholder_id: number; amount: number; alloc_date: string };
 type Expense = { source: 'RAB'|'PT'|'PETTY'|string; status: string; expense_date: string; amount: number; shareholder_id: number|null };
 
@@ -35,21 +34,14 @@ const monthRange = (fromYM: string, toYM: string) => {
   for (let cur = new Date(from); cur <= to; cur = addMonths(cur,1)) out.push(mkey(cur));
   return out;
 };
-
-// best-effort parse injection.period: prioritas YYYY-MM, fallback created_at
-const monthFromInjection = (inj: Injection) => {
-  if (inj.period && /^\d{4}-\d{2}$/.test(inj.period)) return inj.period;
-  return toMonthKey(inj.created_at);
-};
+const monthFromInjection = (inj: Injection) => (inj.period && /^\d{4}-\d{2}$/.test(inj.period)) ? inj.period : toMonthKey(inj.created_at);
 
 // ---------- Component ----------
-export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
-  const today = new Date();
-  const defaultFrom = mkey(addMonths(today, -11));
-  const defaultTo = mkey(today);
-
-  const [fromYM, setFromYM] = useState<string>(defaultFrom);
-  const [toYM, setToYM] = useState<string>(defaultTo);
+export default function SahamTab({ refreshKey = 0 }: { refreshKey?: number }) {
+  // Default 6 bulan terakhir (termasuk bulan ini)
+  const thisMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const [fromYM, setFromYM] = useState<string>(mkey(addMonths(thisMonth, -5)));
+  const [toYM, setToYM] = useState<string>(mkey(thisMonth));
 
   const months = useMemo(()=> monthRange(fromYM, toYM), [fromYM, toYM]);
   const [loading, setLoading] = useState(true);
@@ -65,7 +57,7 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
     setLoading(true);
     try {
       const [
-        { data: sh, error: e1 },
+        { data: sh,  error: e1 },
         { data: inj, error: e2 },
         { data: ob,  error: e3 },
         { data: cc,  error: e4 },
@@ -73,11 +65,11 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
         { data: ex,  error: e6 },
       ] = await Promise.all([
         supabase.from('shareholders').select('id,name,ownership_percent').order('id'),
-        supabase.from('capital_injections').select('id,period,created_at'),
+        supabase.from('capital_injections').select('id,period,created_at,target_total'),
         supabase.from('ci_obligations').select('capital_injection_id,shareholder_id,obligation_amount'),
         supabase.from('capital_contributions').select('shareholder_id,amount,transfer_date,status'),
         supabase.from('rab_allocations').select('shareholder_id,amount,alloc_date'),
-        supabase.from('expenses').select('source,status,expense_date,amount,shareholder_id')
+        supabase.from('expenses').select('source,status,expense_date,amount,shareholder_id'),
       ]);
       if (e1||e2||e3||e4||e5||e6) throw (e1||e2||e3||e4||e5||e6);
 
@@ -89,16 +81,26 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
       setExpenses((ex||[]) as Expense[]);
     } finally { setLoading(false); }
   }
-  useEffect(()=>{ load(); /* eslint-disable-next-line */ }, [refreshKey]);
+  useEffect(()=>{ load(); /* eslint-disable-next-line */ }, [refreshKey, fromYM, toYM]);
 
-  // ----- PT: Nominal = obligations per injection month -----
+  // PT: Nominal (total target_total per bulan)
+  const nominalPerMonth = useMemo(()=>{
+    const perMonth = new Map<string, number>();
+    for (const inj of injections) {
+      const ym = monthFromInjection(inj);
+      if (!months.includes(ym)) continue;
+      perMonth.set(ym, (perMonth.get(ym)||0) + +(inj.target_total||0));
+    }
+    return months.map(ym => perMonth.get(ym) || 0);
+  }, [injections, months]);
+
+  // PT: Obligation per bulan per SH (buat unpaid)
   const obligPerMonthPerSH = useMemo(()=>{
     const injMonth = new Map<number,string>(injections.map(i=>[i.id, monthFromInjection(i)]));
-    const map = new Map<string, Map<number, number>>(); // ym => (sid => amount)
+    const map = new Map<string, Map<number, number>>();
     for (const o of obligs) {
       const ym = injMonth.get(o.capital_injection_id);
-      if (!ym) continue;
-      if (!months.includes(ym)) continue;
+      if (!ym || !months.includes(ym)) continue;
       if (!map.has(ym)) map.set(ym, new Map());
       const m = map.get(ym)!;
       m.set(o.shareholder_id, (m.get(o.shareholder_id)||0) + +o.obligation_amount);
@@ -106,16 +108,7 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
     return map;
   }, [injections, obligs, months]);
 
-  const nominalPerMonth = useMemo(()=>{
-    return months.map(ym=>{
-      const m = obligPerMonthPerSH.get(ym);
-      let total = 0;
-      if (m) for (const v of m.values()) total += v;
-      return total;
-    });
-  }, [months, obligPerMonthPerSH]);
-
-  // ----- PT: Terbayar = contributions posted per month -----
+  // PT: Terbayar per bulan per SH
   const paidPerMonthPerSH = useMemo(()=>{
     const map = new Map<string, Map<number, number>>();
     for (const c of contribs.filter(c=>c.status==='posted')) {
@@ -128,7 +121,7 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
     return map;
   }, [contribs, months]);
 
-  // ----- PT: Belum Terbayar (per month, per SH) = obligation - paid (month bucket) -----
+  // PT: Belum Terbayar = obligation - paid (bucket per bulan)
   const unpaidPerMonthPerSH = useMemo(()=>{
     const map = new Map<string, Map<number, number>>();
     for (const ym of months) {
@@ -145,24 +138,20 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
     return map;
   }, [months, obligPerMonthPerSH, paidPerMonthPerSH]);
 
-  // totals “terbayar” & “belum”
+  // totals paid/unpaid per SH
   const totalPaidPerSH = useMemo(()=>{
     const t = new Map<number, number>();
-    for (const m of paidPerMonthPerSH.values()) {
-      for (const [sid, val] of m) t.set(sid, (t.get(sid)||0)+val);
-    }
+    for (const m of paidPerMonthPerSH.values()) for (const [sid, val] of m) t.set(sid, (t.get(sid)||0)+val);
     return t;
   }, [paidPerMonthPerSH]);
 
   const totalUnpaidPerSH = useMemo(()=>{
     const t = new Map<number, number>();
-    for (const m of unpaidPerMonthPerSH.values()) {
-      for (const [sid, val] of m) t.set(sid, (t.get(sid)||0)+val);
-    }
+    for (const m of unpaidPerMonthPerSH.values()) for (const [sid, val] of m) t.set(sid, (t.get(sid)||0)+val);
     return t;
   }, [unpaidPerMonthPerSH]);
 
-  // ----- RAB Balance -----
+  // RAB Balance
   const rabAllocPerMonth = useMemo(()=>{
     const perMonth = new Map<string, number>();
     for (const a of rabAllocs) {
@@ -210,7 +199,7 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
         <Button variant="outline" onClick={load}><RefreshCcw className="h-4 w-4 mr-2" />Refresh</Button>
       </div>
 
-      {/* PT - TERBAYAR */}
+      {/* PT – Terbayar */}
       <Card>
         <CardHeader><CardTitle>PT – Terbayar</CardTitle></CardHeader>
         <CardContent>
@@ -220,24 +209,24 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
             rows={[
               {
                 label: 'Nominal',
-                values: months.map(ym => nominalPerMonth[months.indexOf(ym)] || 0),
+                values: months.map((ym)=> nominalPerMonth[months.indexOf(ym)] || 0),
                 rightLabel: 'TOTAL SETOR',
                 rightValue: nominalPerMonth.reduce((a,b)=>a+b,0),
                 isMuted: true,
               },
               ...holders.map(h=>({
                 label: `${h.name} ${h.ownership_percent ? `(${Math.round(h.ownership_percent)}%)` : ''}`,
-                values: months.map(ym => (paidPerMonthPerSH.get(ym)?.get(h.id) || 0)),
+                values: months.map((ym)=> paidPerMonthPerSH.get(ym)?.get(h.id) || 0),
                 rightLabel: '',
-                rightValue: (totalPaidPerSH.get(h.id) || 0),
-              }))
+                rightValue: totalPaidPerSH.get(h.id) || 0,
+              })),
             ]}
             rightHeader="TOTAL SETOR"
           />
         </CardContent>
       </Card>
 
-      {/* PT - BELUM TERBAYAR */}
+      {/* PT – Belum Terbayar */}
       <Card>
         <CardHeader><CardTitle>PT – Belum Terbayar</CardTitle></CardHeader>
         <CardContent>
@@ -247,25 +236,25 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
             rows={[
               {
                 label: 'Nominal',
-                values: months.map(ym => nominalPerMonth[months.indexOf(ym)] || 0),
+                values: months.map((ym)=> nominalPerMonth[months.indexOf(ym)] || 0),
                 rightLabel: 'TOTAL BELUM DIBAYARKAN',
                 rightValue: nominalPerMonth.reduce((a,b)=>a+b,0),
                 isMuted: true,
               },
               ...holders.map(h=>({
                 label: `${h.name} ${h.ownership_percent ? `(${Math.round(h.ownership_percent)}%)` : ''}`,
-                values: months.map(ym => (unpaidPerMonthPerSH.get(ym)?.get(h.id) || 0)),
+                values: months.map((ym)=> unpaidPerMonthPerSH.get(ym)?.get(h.id) || 0),
                 rightLabel: '',
-                rightValue: (totalUnpaidPerSH.get(h.id) || 0),
-                dangerRight: (totalUnpaidPerSH.get(h.id)||0) > 0
-              }))
+                rightValue: totalUnpaidPerSH.get(h.id) || 0,
+                dangerRight: (totalUnpaidPerSH.get(h.id)||0) > 0,
+              })),
             ]}
             rightHeader="TOTAL BELUM DIBAYARKAN"
           />
         </CardContent>
       </Card>
 
-      {/* RAB - BALANCE */}
+      {/* RAB – Balance */}
       <Card>
         <CardHeader><CardTitle>RAB – Balance</CardTitle></CardHeader>
         <CardContent>
@@ -275,7 +264,7 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
             rows={[
               {
                 label: 'Nominal',
-                values: months.map(ym => rabAllocPerMonth.get(ym) || 0),
+                values: months.map((ym)=> rabAllocPerMonth.get(ym) || 0),
                 rightLabel: 'TOTAL RAB',
                 rightValue: Array.from(rabAllocPerMonth.values()).reduce((a,b)=>a+b,0),
                 isMuted: true,
@@ -285,12 +274,12 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
                 const balance = rabBalancePerSH.get(h.id)||0;
                 return {
                   label: `${h.name} ${h.ownership_percent ? `(${Math.round(h.ownership_percent)}%)` : ''}`,
-                  values: months.map(() => 0), // (opsional) bisa isi alokasi per bulan per SH jika mau dipecah
+                  values: months.map(()=> 0),
                   rightLabel: `Rp ${fmt.format(total)}`,
                   rightValue: balance,
-                  rightValueLabel: 'DANA TERSEDIA'
+                  rightValueLabel: 'DANA TERSEDIA',
                 };
-              })
+              }),
             ]}
             rightHeader="TOTAL RAB / DANA TERSEDIA"
             showTwoRightColumns
@@ -301,13 +290,9 @@ export default function SahamTab({ refreshKey=0 }: { refreshKey?: number }) {
   );
 }
 
-// ---------- Reusable pivot table ----------
+// ---------- Reusable table ----------
 function PivotTable({
-  loading,
-  months,
-  rows,
-  rightHeader,
-  showTwoRightColumns = false,
+  loading, months, rows, rightHeader, showTwoRightColumns = false,
 }: {
   loading: boolean;
   months: string[];
@@ -316,9 +301,9 @@ function PivotTable({
   rows: Array<{
     label: string;
     values: number[];
-    rightLabel?: string;      // kalau showTwoRightColumns, ini kolom kanan-1
-    rightValue?: number;      // kolom kanan (angka)
-    rightValueLabel?: string; // label kecil di bawah angka kolom kanan
+    rightLabel?: string;
+    rightValue?: number;
+    rightValueLabel?: string;
     isMuted?: boolean;
     dangerRight?: boolean;
   }>;
@@ -342,9 +327,7 @@ function PivotTable({
                 <th className="text-right px-3 py-2">Total</th>
                 <th className="text-right px-3 py-2">{rightHeader}</th>
               </>
-            ) : (
-              <th className="text-right px-3 py-2">{rightHeader}</th>
-            )}
+            ) : (<th className="text-right px-3 py-2">{rightHeader}</th>)}
           </tr>
         </thead>
         <tbody className="text-sm">
@@ -359,7 +342,10 @@ function PivotTable({
               {showTwoRightColumns ? (
                 <>
                   <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{r.rightLabel || '—'}</td>
-                  <td className={cnRight(r)}>{`Rp ${fmt.format(r.rightValue||0)}`}{r.rightValueLabel ? <div className="text-xs text-muted-foreground">{r.rightValueLabel}</div>:null}</td>
+                  <td className={cnRight(r)}>
+                    {`Rp ${fmt.format(r.rightValue||0)}`}
+                    {r.rightValueLabel ? <div className="text-xs text-muted-foreground">{r.rightValueLabel}</div> : null}
+                  </td>
                 </>
               ) : (
                 <td className={cnRight(r)}>{`Rp ${fmt.format(r.rightValue||0)}`}</td>
@@ -369,7 +355,7 @@ function PivotTable({
         </tbody>
       </table>
       <div className="text-xs text-muted-foreground px-3 py-2">
-        * Kolom per bulan otomatis dari filter <em>From/To</em>. “Nominal” = kewajiban (obligations) per injection; “Terbayar” = kontribusi (status=posted); “Belum Terbayar” = Nominal − Terbayar; RAB Balance = Alloc − Realisasi.
+        * “Nominal” = total <code>capital_injections.target_total</code> per bulan. “Terbayar” = contributions (posted). “Belum Terbayar” = obligation − paid. RAB Balance = Alloc − Realisasi.
       </div>
     </div>
   );
