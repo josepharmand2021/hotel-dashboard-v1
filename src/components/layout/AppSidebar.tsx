@@ -52,7 +52,6 @@ const NAV: NavGroup[] = [
       { label: 'Capital Injections', href: '/finance/capital-injections' },
       { label: 'Expenses', href: '/finance/expenses' },
       { label: 'Petty Cash', href: '/finance/petty-cash' },
-      { label: 'RAB (Master)', href: '/finance/rab' },
       { label: 'RAB Allocations', href: '/finance/rab-allocations' },
     ],
   },

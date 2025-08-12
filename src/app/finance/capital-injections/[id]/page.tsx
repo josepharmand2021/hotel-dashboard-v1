@@ -160,15 +160,6 @@ export default function CapitalInjectionDetailPage() {
     } catch (e: any) { toast.error(e.message || "Gagal memperbarui"); }
   }
 
-  // Quick add
-  const [qaOpen, setQaOpen] = useState(false);
-  const [qaShId, setQaShId] = useState<number | null>(null);
-  const [qaShName, setQaShName] = useState<string>("");
-  const [qaAmount, setQaAmount] = useState<string>("");
-  const [qaDate, setQaDate] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [qaNote, setQaNote] = useState<string>("");
-  const [qaSaving, setQaSaving] = useState(false);
-
   function openQuickAdd(row: any) {
     setQaShId(row.shareholder_id);
     setQaShName(row.shareholder_name || String(row.shareholder_id));

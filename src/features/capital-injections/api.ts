@@ -82,15 +82,9 @@ export async function activatePlan(id: number) {
 /* ===================== SNAPSHOT OBLIGATIONS ===================== */
 
 /** Generate/Regenerate snapshot obligations dari % ownership */
-export async function snapshotObligations(planId: number, replace = true) {
-  const { data, error } = await supabase.rpc('ci_snapshot_obligations', {
-    p_plan_id: planId,
-    p_replace: replace,
-  });
+export async function snapshotObligations(planId: number, _replace = true) {
+  const { error } = await supabase.rpc('ci_generate_snapshot', { p_plan_id: planId });
   if (error) throw error;
-  return (
-    (data as Array<{ shareholder_id: number; ownership_percent_snapshot: number; obligation_amount: number }>) || []
-  );
 }
 
 /* ===================== PROGRESS & OBLIGATIONS ===================== */
