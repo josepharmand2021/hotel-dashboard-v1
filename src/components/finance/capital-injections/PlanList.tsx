@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { listPlans } from '@/features/capital-injections/api';
 import type { PlanSummary } from '@/features/capital-injections/types';
-import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
@@ -21,7 +21,7 @@ export default function PlanList() {
       setLoading(true);
       try {
         const data = await listPlans();
-        setRows(data);
+        setRows(data || []);
       } catch (e: any) {
         toast.error(e.message || 'Gagal memuat');
       } finally {
@@ -38,6 +38,7 @@ export default function PlanList() {
           <Link href="/finance/capital-injections/new">New Plan</Link>
         </Button>
       </div>
+
       <Card>
         <CardHeader>
           <CardTitle>Plans</CardTitle>
@@ -56,31 +57,55 @@ export default function PlanList() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((r) => (
-                  <TableRow key={r.id}>
-                    <TableCell>{r.period}</TableCell>
-                    <TableCell className="text-right">Rp {fmtID.format(r.target_total)}</TableCell>
-                    <TableCell className="text-right">Rp {fmtID.format(r.posted_total)}</TableCell>
-                    <TableCell>
-                      <div className="w-40 bg-muted rounded-full h-2">
-                        <div className={`h-2 rounded-full ${r.progress_percent >= 100 ? 'bg-green-500' : 'bg-primary'}`} style={{ width: `${Math.min(100, r.progress_percent)}%` }} />
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1">{r.progress_percent}%</div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={r.status === 'active' ? 'default' : r.status === 'closed' ? 'secondary' : 'outline'}>{r.status}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" asChild>
-                        <Link href={`/finance/capital-injections/${r.id}`}>Open</Link>
-                      </Button>
-                    </TableCell>
+                {loading && Array.from({ length: 5 }).map((_, i) => (
+                  <TableRow key={`s-${i}`}>
+                    <TableCell><div className="h-4 w-24 bg-muted animate-pulse rounded" /></TableCell>
+                    <TableCell className="text-right"><div className="h-4 w-28 bg-muted animate-pulse rounded ml-auto" /></TableCell>
+                    <TableCell className="text-right"><div className="h-4 w-28 bg-muted animate-pulse rounded ml-auto" /></TableCell>
+                    <TableCell><div className="h-2 w-40 bg-muted animate-pulse rounded" /></TableCell>
+                    <TableCell><div className="h-6 w-16 bg-muted animate-pulse rounded" /></TableCell>
+                    <TableCell />
                   </TableRow>
                 ))}
-                {rows.length === 0 && (
+
+                {!loading && rows.map((r) => {
+                  const posted = r.posted_total ?? 0;
+                  const target = r.target_total ?? 0;
+                  const pctFromApi = r.progress_percent ?? (target ? Math.round((posted * 100) / target) : 0);
+                  const pct = Math.max(0, Math.min(100, pctFromApi));
+
+                  return (
+                    <TableRow key={r.id}>
+                      <TableCell className="font-medium">{r.period}</TableCell>
+                      <TableCell className="text-right">Rp {fmtID.format(target)}</TableCell>
+                      <TableCell className="text-right">Rp {fmtID.format(posted)}</TableCell>
+                      <TableCell>
+                        <div className="w-40 bg-muted rounded-full h-2" aria-label={`Progress ${pct}%`}>
+                          <div
+                            className={`h-2 rounded-full ${pct >= 100 ? 'bg-green-500' : 'bg-primary'}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">{pct}%</div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={r.status === 'active' ? 'default' : r.status === 'closed' ? 'secondary' : 'outline'}>
+                          {r.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="ghost" asChild>
+                          <Link href={`/finance/capital-injections/${r.id}`}>Open</Link>
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+
+                {!loading && rows.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-muted-foreground py-10">
-                      {loading ? 'Memuat…' : 'Belum ada plan'}
+                      Belum ada plan
                     </TableCell>
                   </TableRow>
                 )}

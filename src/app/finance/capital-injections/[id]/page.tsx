@@ -23,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 
@@ -40,7 +40,7 @@ export default function CapitalInjectionDetailPage() {
   const [obligationRows, setObligationRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // add-contribution form
+  // add-contribution form (tab Contributions)
   const [shareholderId, setShareholderId] = useState("");
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState("");
@@ -52,6 +52,15 @@ export default function CapitalInjectionDetailPage() {
   const [editObId, setEditObId] = useState<number | null>(null);
   const [editAmount, setEditAmount] = useState<string>("");
   const [editReason, setEditReason] = useState<string>("");
+
+  // QUICK ADD dialog (Overview)
+  const [qaOpen, setQaOpen] = useState(false);
+  const [qaShId, setQaShId] = useState<number | null>(null);
+  const [qaShName, setQaShName] = useState<string>("");
+  const [qaAmount, setQaAmount] = useState<string>("");
+  const [qaDate, setQaDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [qaNote, setQaNote] = useState<string>("");
+  const [qaSaving, setQaSaving] = useState(false);
 
   async function fetchAll() {
     setLoading(true);
@@ -145,6 +154,41 @@ export default function CapitalInjectionDetailPage() {
     } catch (e: any) { toast.error(e.message || "Gagal memperbarui"); }
   }
 
+  // === Quick Add handlers ===
+  function openQuickAdd(row: any) {
+    setQaShId(row.shareholder_id);
+    setQaShName(row.shareholder_name || String(row.shareholder_id));
+    const def = Number(row.remaining) > 0 ? Math.round(Number(row.remaining)) : 0;
+    setQaAmount(def ? String(def) : "");
+    setQaDate(new Date().toISOString().slice(0, 10));
+    setQaNote("");
+    setQaOpen(true);
+  }
+
+  async function saveQuickAdd() {
+    if (!qaShId) return;
+    const amt = Number(qaAmount);
+    if (!Number.isFinite(amt) || amt <= 0) return toast.error("Nominal tidak valid");
+    if (!/\d{4}-\d{2}-\d{2}/.test(qaDate)) return toast.error("Tanggal format YYYY-MM-DD");
+    setQaSaving(true);
+    try {
+      await addContribution({
+        planId: id,
+        shareholderId: qaShId,
+        amount: Math.round(amt),
+        transferDate: qaDate,
+        note: qaNote || `Quick add — ${qaShName}`,
+      });
+      toast.success("Cicilan ditambahkan");
+      setQaOpen(false);
+      fetchAll();
+    } catch (e: any) {
+      toast.error(e.message || "Gagal menyimpan");
+    } finally {
+      setQaSaving(false);
+    }
+  }
+
   if (!Number.isFinite(id)) return <div>Invalid ID</div>;
   if (loading || !plan) return <div>Memuat…</div>;
 
@@ -227,6 +271,7 @@ export default function CapitalInjectionDetailPage() {
                       <TableHead className="text-right">Paid</TableHead>
                       <TableHead className="text-right">Remaining</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead className="text-right w-[140px]">Aksi</TableHead>{/* NEW */}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -247,12 +292,22 @@ export default function CapitalInjectionDetailPage() {
                           <TableCell className="text-right">Rp {fmtID.format(r.paid)}</TableCell>
                           <TableCell className="text-right">Rp {fmtID.format(r.remaining)}</TableCell>
                           <TableCell>{badge}</TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openQuickAdd(r)}
+                              disabled={plan.status !== "active"}
+                            >
+                              Tambah cicilan
+                            </Button>
+                          </TableCell>
                         </TableRow>
                       );
                     })}
                     {progressRows.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-muted-foreground py-10">Tidak ada data</TableCell>
+                        <TableCell colSpan={7} className="text-center text-muted-foreground py-10">Tidak ada data</TableCell>
                       </TableRow>
                     )}
                   </TableBody>
@@ -419,6 +474,35 @@ export default function CapitalInjectionDetailPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditOpen(false)}>Batal</Button>
             <Button onClick={saveEditOb}>Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Quick Add Contribution Dialog */}
+      <Dialog open={qaOpen} onOpenChange={setQaOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Tambah cicilan — {qaShName || "-"}</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Amount (IDR)</Label>
+              <Input inputMode="numeric" value={qaAmount} onChange={(e)=>setQaAmount(e.target.value)} placeholder="500000000" />
+            </div>
+            <div className="space-y-1">
+              <Label>Tanggal</Label>
+              <Input type="date" value={qaDate} onChange={(e)=>setQaDate(e.target.value)} />
+            </div>
+            <div className="md:col-span-2 space-y-1">
+              <Label>Note (opsional)</Label>
+              <Textarea value={qaNote} onChange={(e)=>setQaNote(e.target.value)} placeholder="Keterangan cicilan" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={()=>setQaOpen(false)}>Batal</Button>
+            <Button onClick={saveQuickAdd} disabled={qaSaving || plan.status !== "active"}>
+              {qaSaving ? "Menyimpan…" : "Simpan"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
