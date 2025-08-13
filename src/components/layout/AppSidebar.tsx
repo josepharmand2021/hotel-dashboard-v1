@@ -61,6 +61,10 @@ const NAV: NavGroup[] = [
     icon: Settings2,
     items: [
       { label: 'Bank Accounts', href: '/settings/finance/bank-accounts' },
+      { label: 'Categories', href: '/masters/categories' },
+      { label: 'Subcategories', href: '/masters/subcategories' },
+        {label: 'Vendors', href: '/vendors' },
+  {label: 'Shareholders', href: '/shareholders' },
     ],
   },
   {
@@ -72,17 +76,7 @@ const NAV: NavGroup[] = [
       { label: 'Budget Lines', href: '/budget-lines' },
     ],
   },
-  {
-    key: 'masters',
-    label: 'Masters',
-    icon: Settings2,
-    items: [
-      { label: 'Categories', href: '/masters/categories' },
-      { label: 'Subcategories', href: '/masters/subcategories' },
-    ],
-  },
-  { key: 'vendors', label: 'Vendors', icon: Building2, href: '/vendors' },
-  { key: 'shareholders', label: 'Shareholders', icon: Users, href: '/shareholders' },
+
 ];
 
 function isActive(href: string, pathname: string) {

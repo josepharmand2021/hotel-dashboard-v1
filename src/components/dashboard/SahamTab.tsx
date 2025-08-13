@@ -255,37 +255,19 @@ export default function SahamTab({ refreshKey = 0 }: { refreshKey?: number }) {
       </Card>
 
       {/* RAB – Balance */}
-      <Card>
-        <CardHeader><CardTitle>RAB – Balance</CardTitle></CardHeader>
-        <CardContent>
-          <PivotTable
-            loading={loading}
-            months={months}
-            rows={[
-              {
-                label: 'Nominal',
-                values: months.map((ym)=> rabAllocPerMonth.get(ym) || 0),
-                rightLabel: 'TOTAL RAB',
-                rightValue: Array.from(rabAllocPerMonth.values()).reduce((a,b)=>a+b,0),
-                isMuted: true,
-              },
-              ...holders.map(h=>{
-                const total = rabAllocTotalPerSH.get(h.id)||0;
-                const balance = rabBalancePerSH.get(h.id)||0;
-                return {
-                  label: `${h.name} ${h.ownership_percent ? `(${Math.round(h.ownership_percent)}%)` : ''}`,
-                  values: months.map(()=> 0),
-                  rightLabel: `Rp ${fmt.format(total)}`,
-                  rightValue: balance,
-                  rightValueLabel: 'DANA TERSEDIA',
-                };
-              }),
-            ]}
-            rightHeader="TOTAL RAB / DANA TERSEDIA"
-            showTwoRightColumns
-          />
-        </CardContent>
-      </Card>
+      {/* RAB – Balance (simple) */}
+<Card>
+  <CardHeader><CardTitle>RAB – Balance</CardTitle></CardHeader>
+  <CardContent>
+    <RabBalanceTable
+      holders={holders}
+      allocMap={rabAllocTotalPerSH}
+      spentMap={rabActualPerSH}
+      loading={loading}
+    />
+  </CardContent>
+</Card>
+
     </div>
   );
 }
@@ -360,6 +342,90 @@ function PivotTable({
     </div>
   );
 }
+
+function RabBalanceTable({
+  holders,
+  allocMap,
+  spentMap,
+  loading,
+}: {
+  holders: { id: number; name: string; ownership_percent: number }[];
+  allocMap: Map<number, number>;
+  spentMap: Map<number, number>;
+  loading: boolean;
+}) {
+  const rows = holders.map((h) => {
+    const allocated = allocMap.get(h.id) || 0;
+    const spent = spentMap.get(h.id) || 0;
+    const available = allocated - spent;
+    return {
+      id: h.id,
+      label: `${h.name}${h.ownership_percent ? ` (${Math.round(h.ownership_percent)}%)` : ''}`,
+      allocated,
+      spent,
+      available,
+    };
+  });
+
+  const totAllocated = rows.reduce((a, r) => a + r.allocated, 0);
+  const totSpent     = rows.reduce((a, r) => a + r.spent, 0);
+  const totAvail     = rows.reduce((a, r) => a + r.available, 0);
+
+  return (
+    <div className="overflow-x-auto rounded-md border">
+      <table className="min-w-[700px] w-full">
+        <thead className="bg-muted/50 text-sm">
+          <tr>
+            <th className="text-left px-3 py-2">Shareholder</th>
+            <th className="text-right px-3 py-2">Dana Dialokasikan</th>
+            <th className="text-right px-3 py-2">Dana Terpakai</th>
+            <th className="text-right px-3 py-2">Dana Tersedia</th>
+          </tr>
+        </thead>
+        <tbody className="text-sm">
+          {loading ? (
+            <tr>
+              <td colSpan={4} className="py-10 text-center text-muted-foreground">Loading…</td>
+            </tr>
+          ) : rows.length === 0 ? (
+            <tr>
+              <td colSpan={4} className="text-center text-muted-foreground px-3 py-4">
+                Belum ada alokasi RAB.
+              </td>
+            </tr>
+          ) : (
+            rows.map((r) => (
+              <tr key={r.id} className="border-t">
+                <td className="px-3 py-2">{r.label}</td>
+                <td className="px-3 py-2 text-right tabular-nums">Rp {fmt.format(r.allocated)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">Rp {fmt.format(r.spent)}</td>
+                <td className={`px-3 py-2 text-right tabular-nums ${r.available < 0 ? 'text-red-600' : ''}`}>
+                  Rp {fmt.format(r.available)}
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+        {!loading && rows.length > 0 && (
+          <tfoot className="text-sm font-medium">
+            <tr className="border-t bg-muted/30">
+              <td className="px-3 py-2 text-right">TOTAL</td>
+              <td className="px-3 py-2 text-right tabular-nums">Rp {fmt.format(totAllocated)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">Rp {fmt.format(totSpent)}</td>
+              <td className={`px-3 py-2 text-right tabular-nums ${totAvail < 0 ? 'text-red-600' : ''}`}>
+                Rp {fmt.format(totAvail)}
+              </td>
+            </tr>
+          </tfoot>
+        )}
+      </table>
+      <div className="text-xs text-muted-foreground px-3 py-2">
+        * Dana Dialokasikan = total alokasi RAB. Dana Terpakai = realisasi expenses (RAB, posted). Dana Tersedia = Alokasi − Terpakai.
+      </div>
+    </div>
+  );
+}
+
 
 function cnRight(r: { dangerRight?: boolean }) {
   return `px-3 py-2 text-right tabular-nums whitespace-nowrap ${r.dangerRight ? 'text-red-600' : ''}`;
