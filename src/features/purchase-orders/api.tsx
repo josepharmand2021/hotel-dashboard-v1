@@ -2,8 +2,6 @@
 
 import { revalidatePath } from 'next/cache';
 import { supabaseServer } from '@/lib/supabase/server';
-import { supabase } from '@/lib/supabase/client';
-
 
 export type NewPOItem = {
   description: string;
@@ -15,11 +13,16 @@ export type NewPOItem = {
 export type NewPO = {
   po_number: string;
   vendor_id: number;
-  po_date?: string | null;        // 'YYYY-MM-DD'
-  delivery_date?: string | null;  // 'YYYY-MM-DD'
+  po_date?: string | null;
+  delivery_date?: string | null;
   is_tax_included: boolean;
-  tax_percent: number;            // e.g. 11
+  tax_percent: number;
   note?: string | null;
+
+  term_code?: 'CBD'|'COD'|'NET'|''|null;
+  term_days?: number | null;
+  due_date_override?: string | null;
+
   items: NewPOItem[];
 };
 
@@ -38,6 +41,10 @@ export async function createPurchaseOrder(input: NewPO) {
       tax_percent: input.tax_percent,
       note: input.note ?? null,
       status: 'draft',
+
+      term_code: input.term_code ? input.term_code : null,
+      term_days: input.term_code === 'NET' ? (input.term_days ?? 0) : null,
+      due_date_override: input.due_date_override ?? null,
     })
     .select('id')
     .single();
@@ -45,7 +52,7 @@ export async function createPurchaseOrder(input: NewPO) {
   if (poErr) throw poErr;
   const poId = poIns.id as number;
 
-  // 2) Insert items (skip rows kosong)
+  // 2) Insert items
   const items = (input.items || [])
     .filter(it => it.description && Number(it.qty) > 0)
     .map(it => ({
@@ -61,19 +68,18 @@ export async function createPurchaseOrder(input: NewPO) {
     if (itemsErr) throw itemsErr;
   }
 
-  // (opsional) revalidate list
   revalidatePath('/purchase-orders');
   return { id: poId };
 }
 
-// Pakai VIEW yang sudah menjumlah total dari po_items
+// Pakai VIEW baru v_po_with_terms
 export async function listPurchaseOrders({
   page = 1, pageSize = 10, q = ''
 }: { page?: number; pageSize?: number; q?: string }) {
   const sb = supabaseServer();
 
   let query = sb
-    .from('view_purchase_orders') // ← pastikan view sudah dibuat
+    .from('v_po_with_terms')
     .select('*', { count: 'exact' })
     .order('po_date', { ascending: false })
     .range((page - 1) * pageSize, page * pageSize - 1);
@@ -96,7 +102,6 @@ export async function deletePurchaseOrder(id: number) {
 export async function getPurchaseOrder(id: number) {
   const sb = supabaseServer();
 
-  // Header + vendor + items
   const { data, error } = await sb
     .from('purchase_orders')
     .select(`
@@ -108,15 +113,25 @@ export async function getPurchaseOrder(id: number) {
       tax_percent,
       status,
       note,
-      vendor:vendors(id, name),
+      vendor:vendors(id, name, payment_type, term_days),
+      term_code,
+      term_days,
+      due_date_override,
       po_items(
         id, description, qty, unit, unit_price
       )
     `)
     .eq('id', id)
     .single();
-
   if (error) throw error;
+
+  // Ambil agregat & due date dari view
+  const { data: agg, error: e2 } = await sb
+    .from('v_po_with_terms')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (e2) throw e2;
 
   const items = (data?.po_items ?? []).map((it: any) => ({
     ...it,
@@ -125,30 +140,33 @@ export async function getPurchaseOrder(id: number) {
     amount: (Number(it.qty) || 0) * (Number(it.unit_price) || 0),
   }));
 
-  const subtotal = items.reduce((s: number, it: any) => s + it.amount, 0);
-  const taxPct = Number(data?.tax_percent ?? 0);
-  const taxAmount = data?.is_tax_included ? 0 : subtotal * (taxPct / 100);
-  const total = data?.is_tax_included ? subtotal : subtotal + taxAmount;
-
   return {
     id: data?.id,
     po_number: data?.po_number,
     po_date: data?.po_date,
     delivery_date: data?.delivery_date,
     is_tax_included: !!data?.is_tax_included,
-    tax_percent: taxPct,
+    tax_percent: Number(data?.tax_percent ?? 0),
     status: data?.status,
     note: data?.note ?? '',
     vendor: data?.vendor ?? null,
+    term_code: data?.term_code ?? null,
+    term_days: data?.term_days ?? null,
+    due_date_override: data?.due_date_override ?? null,
+
     items,
-    subtotal,
-    taxAmount,
-    total,
+    subtotal: Number(agg?.subtotal ?? 0),
+    taxAmount: Number(agg?.tax_amount ?? 0),
+    total: Number(agg?.total_amount ?? 0),
+
+    effective_term_code: agg?.effective_term_code ?? null,
+    effective_term_days: Number(agg?.effective_term_days ?? 0),
+    due_date_effective: agg?.due_date_effective ?? null,
   };
 }
 
 export async function updatePurchaseOrderStatus(id: number, status: string) {
-  const { error } = await supabase.from('purchase_orders').update({ status }).eq('id', id);
+  const sb = supabaseServer();
+  const { error } = await sb.from('purchase_orders').update({ status }).eq('id', id);
   if (error) throw error;
 }
-

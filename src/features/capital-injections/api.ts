@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase/client';
 import type { CapitalInjection, PlanSummary, ShareholderProgress, Contribution } from './types';
+import { getDefaultPTBankId } from "@/features/bank-accounts/api";
 
 /* ===================== PLANS ===================== */
 
@@ -203,3 +204,31 @@ export async function deleteContribution(id: number) {
   const { error } = await supabase.from('capital_contributions').delete().eq('id', id);
   if (error) throw error;
 }
+
+export type ContributionInput = {
+  capital_injection_id: number;
+  shareholder_id: number;
+  amount: number;
+  transfer_date: string; // ISO
+  note?: string;
+  status: "draft" | "posted";
+};
+
+export async function createContribution(input: ContributionInput) {
+  const payload: any = { ...input };
+  if (input.status === "posted") {
+    payload.bank_account_id = await getDefaultPTBankId();
+  }
+  const { error } = await supabase.from("capital_contributions").insert(payload);
+  if (error) throw error;
+}
+
+export async function postContribution(id: number) {
+  const bankId = await getDefaultPTBankId();
+  const { error } = await supabase
+    .from("capital_contributions")
+    .update({ status: "posted", bank_account_id: bankId })
+    .eq("id", id);
+  if (error) throw error;
+}
+

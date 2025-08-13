@@ -88,3 +88,20 @@ export type ExpenseListFilters = {
   orderBy?: 'expense_date'|'created_at'|'amount';
   orderDir?: 'asc'|'desc';
 };
+
+
+export type ExpenseInput = {
+  source: "PT" | "RAB" | "PETTY";
+  shareholder_id?: number | null;
+  expense_date: string;
+  amount: number;
+  vendor_id: number;
+  vendor_name?: string | null;
+  invoice_no?: string | null;
+  note?: string | null;
+  category_id: number;
+  subcategory_id: number;
+  status: "draft" | "posted" | "void";
+  cashbox_id?: number | null;
+  account_id?: number | null; // PT bank (optional; auto-assign)
+};

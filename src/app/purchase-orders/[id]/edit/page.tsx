@@ -19,10 +19,37 @@ import { getPurchaseOrder, updatePurchaseOrder } from '@/features/purchase-order
 import { listVendors } from '@/features/vendors/api';
 
 /* =========================
-   Schema (sama seperti NEW)
+   Helpers
+========================= */
+function FieldError({ msg }: { msg?: string }) {
+  if (!msg) return null;
+  return <p className="text-xs text-red-600 mt-1">{msg}</p>;
+}
+const asNum = (v: unknown) => {
+  const n = typeof v === 'string' ? parseFloat(v) : Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+type VendorRow = { id: number; name: string; payment_type?: 'CBD'|'COD'|'NET'; term_days?: number };
+
+/* compute due date seperti fungsi SQL compute_due_date */
+function computeDueDate(po_date?: string|null, delivery_date?: string|null, term_code?: string|null, term_days?: number|null) {
+  const p = po_date ? new Date(po_date) : null;
+  const d = delivery_date ? new Date(delivery_date) : null;
+  const code = (term_code || 'NET').toUpperCase();
+  const days = term_days ?? 0;
+  const base = (code === 'COD') ? (d || p) : p;
+  if (!base) return '';
+  const dt = new Date(base);
+  if (code === 'NET') dt.setDate(dt.getDate() + days);
+  // CBD: pakai PO date, COD: pakai delivery/PO, NET: +days dari PO
+  return dt.toISOString().slice(0,10);
+}
+
+/* =========================
+   Schema
 ========================= */
 const itemSchema = z.object({
-  id: z.number().optional(),                 // <- beda: untuk edit kita ikutkan id item
+  id: z.number().optional(),                 // id item tetap di state (tidak perlu input hidden)
   description: z.string().min(1, 'Required'),
   qty: z.coerce.number().positive('Qty must be > 0'),
   unit: z.string().optional().or(z.literal('')),
@@ -37,20 +64,15 @@ const schema = z.object({
   is_tax_included: z.coerce.boolean(),
   tax_percent: z.coerce.number().default(11),
   note: z.string().optional().or(z.literal('')),
+
+  term_code: z.enum(['CBD','COD','NET']).optional().or(z.literal('')),
+  term_days: z.coerce.number().min(0).optional(),
+  auto_due: z.coerce.boolean().default(true),
+  due_date_override: z.string().optional().or(z.literal('')),
+
   items: z.array(itemSchema).min(1, 'Add at least one item'),
 });
 type FormVals = z.infer<typeof schema>;
-type VendorRow = { id: number; name: string };
-
-/* helper */
-function FieldError({ msg }: { msg?: string }) {
-  if (!msg) return null;
-  return <p className="text-xs text-red-600 mt-1">{msg}</p>;
-}
-const asNum = (v: unknown) => {
-  const n = typeof v === 'string' ? parseFloat(v) : Number(v);
-  return Number.isFinite(n) ? n : 0;
-};
 
 export default function EditPOPage() {
   const router = useRouter();
@@ -71,6 +93,12 @@ export default function EditPOPage() {
       is_tax_included: true,
       tax_percent: 11,
       note: '',
+
+      term_code: '',      // kosong = ikut vendor
+      term_days: undefined,
+      auto_due: true,
+      due_date_override: '',
+
       items: [{ description: '', qty: 1, unit: 'pcs', unit_price: 0 }],
     },
     mode: 'onChange',
@@ -82,7 +110,7 @@ export default function EditPOPage() {
     (async () => {
       try {
         const { rows } = await listVendors({ q: '', page: 1, pageSize: 200 });
-        setVendors((rows as any[]).map(v => ({ id: v.id, name: v.name })));
+        setVendors((rows as any[]).map(v => ({ id: v.id, name: v.name, payment_type: v.payment_type, term_days: v.term_days })));
       } catch (e: any) {
         toast.error(e.message || 'Failed load vendors');
       }
@@ -95,7 +123,15 @@ export default function EditPOPage() {
     (async () => {
       try {
         setLoading(true);
-        const po = await getPurchaseOrder(id); // harus mengembalikan: header + items
+        const po = await getPurchaseOrder(id);
+
+        // derive defaults for term & due date
+        const effectiveVendorCode = po.term_code ?? po.vendor?.payment_type ?? 'NET';
+        const effectiveVendorDays = (po.term_code ?? po.vendor?.payment_type) === 'NET'
+          ? (po.term_days ?? po.vendor?.term_days ?? 0)
+          : 0;
+
+        const autoDue = !po.due_date_override; // kalau override null => auto
         form.reset({
           po_number: po.po_number ?? '',
           vendor_id: po.vendor?.id ?? po.vendor_id,
@@ -104,6 +140,12 @@ export default function EditPOPage() {
           is_tax_included: !!po.is_tax_included,
           tax_percent: Number(po.tax_percent ?? 11),
           note: po.note ?? '',
+
+          term_code: effectiveVendorCode as any,
+          term_days: effectiveVendorCode === 'NET' ? Number(effectiveVendorDays) : undefined,
+          auto_due: autoDue,
+          due_date_override: po.due_date_override ?? '',
+
           items: (po.items ?? []).map((it: any) => ({
             id: it.id,
             description: it.description ?? '',
@@ -112,7 +154,6 @@ export default function EditPOPage() {
             unit_price: Number(it.unit_price ?? 0),
           })),
         });
-        // pastikan array diisi minimal 1 row
         if (!po.items || po.items.length === 0) replace([{ description: '', qty: 1, unit: 'pcs', unit_price: 0 }]);
       } catch (e: any) {
         toast.error(e.message || 'Failed to load PO');
@@ -123,10 +164,17 @@ export default function EditPOPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  /* watch untuk totals */
+  /* watch untuk totals & terms */
   const watchedItems = useWatch({ control: form.control, name: 'items' }) ?? [];
   const taxPct = useWatch({ control: form.control, name: 'tax_percent' }) ?? 0;
   const incl = useWatch({ control: form.control, name: 'is_tax_included' }) ?? true;
+
+  const poDate = useWatch({ control: form.control, name: 'po_date' });
+  const delivDate = useWatch({ control: form.control, name: 'delivery_date' });
+  const termCode = useWatch({ control: form.control, name: 'term_code' }) || 'NET';
+  const termDays = useWatch({ control: form.control, name: 'term_days' }) ?? 0;
+  const autoDue = useWatch({ control: form.control, name: 'auto_due' });
+  const dueOverride = useWatch({ control: form.control, name: 'due_date_override' });
 
   const subtotal = useMemo(
     () => watchedItems.reduce((sum: number, it: any) => sum + asNum(it?.qty) * asNum(it?.unit_price), 0),
@@ -134,9 +182,17 @@ export default function EditPOPage() {
   );
   const total = incl ? subtotal : subtotal * (1 + asNum(taxPct) / 100);
 
+  const dueFormula = computeDueDate(poDate, delivDate, termCode || 'NET', termCode === 'NET' ? termDays : 0);
+  const dueEffective = autoDue ? dueFormula : (dueOverride || '');
+
   async function onSubmit(values: FormVals) {
     try {
-      await updatePurchaseOrder(id, values);
+      await updatePurchaseOrder(id, {
+        ...values,
+        term_code: values.term_code ? (values.term_code as any) : null,
+        term_days: values.term_code === 'NET' ? (values.term_days ?? 0) : null,
+        due_date_override: values.auto_due ? null : (values.due_date_override || null),
+      });
       toast.success('Purchase Order updated');
       router.push(`/purchase-orders/${id}`);
     } catch (e: any) {
@@ -217,6 +273,62 @@ export default function EditPOPage() {
               <Label htmlFor="note">Note</Label>
               <Input id="note" {...form.register('note')} />
             </div>
+
+            {/* Payment Terms */}
+            <div>
+              <Label htmlFor="term_code">Payment Term</Label>
+              <select
+                id="term_code"
+                className="mt-2 block w-full rounded-md border px-3 py-2 text-sm bg-background"
+                {...form.register('term_code')}
+                defaultValue=""
+              >
+                <option value="">Follow Vendor</option>
+                <option value="CBD">CBD (Cash Before Delivery)</option>
+                <option value="COD">COD (Cash On Delivery)</option>
+                <option value="NET">NET</option>
+              </select>
+            </div>
+
+            <div>
+              <Label htmlFor="term_days">Term Days (NET)</Label>
+              <Input
+                id="term_days"
+                type="number"
+                min={0}
+                {...form.register('term_days', { valueAsNumber: true })}
+                disabled={(termCode || '').toUpperCase() !== 'NET'}
+              />
+            </div>
+
+            {/* Due date */}
+            <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="col-span-1">
+                <Label htmlFor="auto_due">Auto Due Date?</Label>
+                <select
+                  id="auto_due"
+                  className="mt-2 block w-full rounded-md border px-3 py-2 text-sm bg-background"
+                  {...form.register('auto_due', { setValueAs: (v)=> v === 'true' || v === true })}
+                  defaultValue="true"
+                >
+                  <option value="true">Yes (use formula)</option>
+                  <option value="false">No (manual)</option>
+                </select>
+              </div>
+              <div className="col-span-1">
+                <Label htmlFor="due_date_override">Manual Due Date</Label>
+                <Input
+                  id="due_date_override"
+                  type="date"
+                  {...form.register('due_date_override')}
+                  disabled={autoDue}
+                />
+              </div>
+              <div className="col-span-1">
+                <Label>Due Date (Effective)</Label>
+                <Input value={dueEffective || ''} readOnly className="bg-muted/50" />
+              </div>
+            </div>
           </CardContent>
 
           <Separator />
@@ -260,8 +372,7 @@ export default function EditPOPage() {
                       <TableCell className="text-right">
                         <Button type="button" variant="ghost" onClick={() => remove(idx)}>Remove</Button>
                       </TableCell>
-                      {/* hidden field to keep item id on submit */}
-                      <input type="hidden" {...form.register(`items.${idx}.id` as const, { valueAsNumber: true })}/>
+                      {/* ⛔️ Tidak ada input hidden id di dalam <tr> untuk hindari hydration error */}
                     </TableRow>
                   );
                 })}
@@ -282,7 +393,7 @@ export default function EditPOPage() {
                 <span>{incl ? '—' : (subtotal * (asNum(taxPct) / 100)).toLocaleString('id-ID')}</span>
               </div>
               <div className="w-full sm:w-80 flex justify-between font-semibold text-base">
-                <span>Total</span><span>{total.toLocaleString('id-ID')}</span>
+                <span>Total</span><span>{(incl ? subtotal : subtotal * (1 + asNum(taxPct)/100)).toLocaleString('id-ID')}</span>
               </div>
             </div>
           </CardContent>

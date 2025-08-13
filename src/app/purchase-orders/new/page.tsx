@@ -1,6 +1,7 @@
+// src/app/purchase-orders/new/page.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, useFieldArray, useWatch } from 'react-hook-form';
@@ -36,21 +37,35 @@ const schema = z.object({
   is_tax_included: z.coerce.boolean(),
   tax_percent: z.coerce.number().default(11),
   note: z.string().optional().or(z.literal('')),
+  // Kalau nanti punya kolom override, tinggal buka baris ini:
+  // due_date_override: z.string().optional().or(z.literal('')),
   items: z.array(itemSchema).min(1, 'Add at least one item'),
 });
 type FormVals = z.infer<typeof schema>;
-type VendorRow = { id: number; name: string };
 
-/* small helper for error text */
+type VendorRow = {
+  id: number;
+  name: string;
+  // gunakan apa yang tersedia di tabel vendors kamu:
+  payment_type?: 'CBD' | 'COD' | 'NET' | string | null;
+  term_days?: number | null;
+  payment_term_label?: string | null;
+};
+
+/* helpers */
 function FieldError({ msg }: { msg?: string }) {
   if (!msg) return null;
   return <p className="text-xs text-red-600 mt-1">{msg}</p>;
 }
-
-/* number coercion safe helper */
 const asNum = (v: unknown) => {
   const n = typeof v === 'string' ? parseFloat(v) : Number(v);
   return Number.isFinite(n) ? n : 0;
+};
+const addDays = (iso: string, days: number) => {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '';
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + (Number.isFinite(days) ? days : 0));
+  return d.toISOString().slice(0, 10);
 };
 
 export default function NewPOPage() {
@@ -60,8 +75,15 @@ export default function NewPOPage() {
   useEffect(() => {
     (async () => {
       try {
-        const { rows } = await listVendors({ q: '', page: 1, pageSize: 100 });
-        setVendors((rows as any[]).map(v => ({ id: v.id, name: v.name })));
+        // pastikan listVendors mengembalikan fields payment_type, term_days, payment_term_label
+        const { rows } = await listVendors({ q: '', page: 1, pageSize: 200 });
+        setVendors((rows as any[]).map(v => ({
+          id: v.id,
+          name: v.name,
+          payment_type: v.payment_type ?? null,
+          term_days: v.term_days ?? null,
+          payment_term_label: v.payment_term_label ?? null,
+        })));
       } catch (e: any) {
         toast.error(e.message || 'Failed load vendors');
       }
@@ -81,6 +103,7 @@ export default function NewPOPage() {
       is_tax_included: true,
       tax_percent: 11,
       note: '',
+      // due_date_override: '', // buka jika sudah ada kolom
       items: [{ description: '', qty: 1, unit: 'pcs', unit_price: 0 }],
     },
     mode: 'onChange',
@@ -88,10 +111,35 @@ export default function NewPOPage() {
 
   const { fields, append, remove } = useFieldArray({ control: form.control, name: 'items' });
 
-  /* Subscribe changes with useWatch (so totals re-render) */
+  /* Watcher utk totals & term/due-date preview */
   const watchedItems = useWatch({ control: form.control, name: 'items' }) ?? [];
   const taxPct = useWatch({ control: form.control, name: 'tax_percent' }) ?? 0;
   const incl = useWatch({ control: form.control, name: 'is_tax_included' }) ?? true;
+
+  const vendorId = useWatch({ control: form.control, name: 'vendor_id' });
+  const poDate = useWatch({ control: form.control, name: 'po_date' }) || '';
+
+  const vendor = useMemo(() => vendors.find(v => v.id === Number(vendorId)) || null, [vendors, vendorId]);
+
+  const paymentTermLabel = useMemo(() => {
+    if (!vendor) return '—';
+    if (vendor.payment_term_label) return vendor.payment_term_label;
+    if (!vendor.payment_type) return '—';
+    if (vendor.payment_type === 'NET') {
+      const days = Number(vendor.term_days ?? 0);
+      return days > 0 ? `NET ${days} days` : 'NET';
+    }
+    return vendor.payment_type; // CBD / COD
+  }, [vendor]);
+
+  const dueDateEffective = useMemo(() => {
+    if (!vendor || !poDate) return '';
+    const t = (vendor.payment_type || '').toUpperCase();
+    if (t === 'NET') return addDays(poDate, Number(vendor.term_days ?? 0));
+    if (t === 'COD') return poDate; // bayar saat terima barang
+    if (t === 'CBD') return '';     // bayar sebelum pengiriman (anggap no due)
+    return '';
+  }, [vendor, poDate]);
 
   /* Totals */
   const subtotal = watchedItems.reduce((sum: number, it: any) => {
@@ -101,6 +149,8 @@ export default function NewPOPage() {
 
   async function onSubmit(values: FormVals) {
     try {
+      // Kalau nanti menambahkan kolom due_date_override di DB + API:
+      // await createPurchaseOrder({ ...values, due_date_override: values.due_date_override || null } as any);
       await createPurchaseOrder(values);
       toast.success('Purchase Order created');
       router.push('/purchase-orders');
@@ -109,9 +159,6 @@ export default function NewPOPage() {
     }
   }
 
-  /* =========================
-     UI
-  ========================= */
   return (
     <div className="max-w-5xl space-y-4">
       <Breadcrumbs
@@ -188,6 +235,24 @@ export default function NewPOPage() {
             <div className="md:col-span-2">
               <Label htmlFor="note">Note</Label>
               <Input id="note" {...form.register('note')} />
+            </div>
+
+            {/* Payment Term & Due Date (preview) */}
+            <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+              <div>
+                <div className="text-sm text-muted-foreground">Payment Term (Vendor)</div>
+                <div className="font-medium">{paymentTermLabel}</div>
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">Due Date (effective)</div>
+                <div className="font-medium">{dueDateEffective || '—'}</div>
+              </div>
+
+              {/* buka kalau sudah punya kolom override */}
+              {/* <div>
+                <Label htmlFor="due_date_override">Due Date Override (optional)</Label>
+                <Input id="due_date_override" type="date" {...form.register('due_date_override')} />
+              </div> */}
             </div>
           </CardContent>
 

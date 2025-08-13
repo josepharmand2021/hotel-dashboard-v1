@@ -12,63 +12,49 @@ import {
   updatePurchaseOrderStatus,
   deletePurchaseOrder,
 } from '@/features/purchase-orders/api.client';
-import { Eye, Pencil, Trash2 } from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Pencil, Trash2 } from 'lucide-react';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 
 type Row = {
   id: number;
   po_number: string;
   vendor_name: string;
+  po_date: string | null;
   delivery_date: string | null;
-  total: number | null;
+  due_date: string | null;         // from view (effective due)
+  total: number | null;            // total_amount from view
   is_tax_included: boolean;
   tax_percent: number | null;
   status: 'draft' | 'sent' | 'delivered' | 'cancelled' | string;
+  term_code?: 'CBD'|'COD'|'NET'|null;
+  term_days?: number | null;
 };
 
 const fmtID = new Intl.NumberFormat('id-ID');
 
 function StatusBadge({ status }: { status: Row['status'] }) {
   switch ((status || '').toLowerCase()) {
-    case 'approved':
-      return <Badge variant="secondary">Approved</Badge>;
-    case 'completed':
-      return <Badge>Completed</Badge>;
-    case 'cancelled':
-      return <Badge variant="destructive">Cancelled</Badge>;
-    case 'sent':
-      return <Badge variant="secondary">Sent</Badge>;
-    case 'delivered':
-      return <Badge>Delivered</Badge>;
+    case 'approved': return <Badge variant="secondary">Approved</Badge>;
+    case 'completed': return <Badge>Completed</Badge>;
+    case 'cancelled': return <Badge variant="destructive">Cancelled</Badge>;
+    case 'sent': return <Badge variant="secondary">Sent</Badge>;
+    case 'delivered': return <Badge>Delivered</Badge>;
     case 'draft':
-    default:
-      return <Badge variant="outline">Draft</Badge>;
+    default: return <Badge variant="outline">Draft</Badge>;
   }
 }
 
 function StatusSelect({
-  id,
-  value,
-  onChanged,
-}: {
-  id: number;
-  value: Row['status'];
-  onChanged?: (next: Row['status']) => void;
-}) {
+  id, value, onChanged,
+}: { id: number; value: Row['status']; onChanged?: (next: Row['status']) => void }) {
   const [current, setCurrent] = useState<Row['status']>(value);
   const [saving, setSaving] = useState(false);
-
   const handleChange = async (next: Row['status']) => {
     if (next === current) return;
     const prev = current;
-    setCurrent(next); // optimistic
+    setCurrent(next);
     setSaving(true);
     try {
       await updatePurchaseOrderStatus(id, next);
@@ -81,21 +67,30 @@ function StatusSelect({
       setSaving(false);
     }
   };
-
   return (
     <Select value={String(current)} onValueChange={(v) => handleChange(v as Row['status'])} disabled={saving}>
-      <SelectTrigger className="h-8 w-28 whitespace-nowrap shrink-0">
-        <SelectValue />
-      </SelectTrigger>
+      <SelectTrigger className="h-8 w-28 whitespace-nowrap shrink-0"><SelectValue /></SelectTrigger>
       <SelectContent>
         {['draft', 'sent', 'delivered', 'cancelled'].map((s) => (
-          <SelectItem key={s} value={s}>
-            {s.charAt(0).toUpperCase() + s.slice(1)}
-          </SelectItem>
+          <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>
         ))}
       </SelectContent>
     </Select>
   );
+}
+
+function duePill(due?: string | null) {
+  if (!due) return '—';
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(due); d.setHours(0,0,0,0);
+  const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
+  const cls = diff < 0 ? 'bg-red-100 text-red-700'
+    : diff <= 7 ? 'bg-amber-100 text-amber-700'
+    : 'bg-emerald-100 text-emerald-700';
+  const label = diff < 0 ? `${Math.abs(diff)}d overdue`
+    : diff === 0 ? 'Due today'
+    : `Due in ${diff}d`;
+  return <span className={`px-2 py-0.5 rounded text-xs ${cls}`}>{new Date(due).toISOString().slice(0,10)} • {label}</span>;
 }
 
 export default function PurchaseOrdersListPage() {
@@ -115,11 +110,7 @@ export default function PurchaseOrdersListPage() {
     }
   };
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, page]);
-
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [q, page]);
   const pages = Math.max(1, Math.ceil(total / pageSize));
 
   const onDelete = async (id: number) => {
@@ -135,20 +126,17 @@ export default function PurchaseOrdersListPage() {
     }
   };
 
-    const header = useMemo(
-    () => (
-        <div className="p-3 grid grid-cols-[1.2fr_2fr_1.2fr_1.4fr_7rem_6rem] gap-2 font-medium text-sm bg-muted/50">
-        <div>PO Number</div>
-        <div>Vendor</div>
-        <div>Delivery Date</div>
-        <div>Total Amount</div>
-        <div>Status</div>
-        <div className="text-right">Actions</div>
-        </div>
-    ),
-    []
-    );
-
+  const header = useMemo(() => (
+    <div className="p-3 grid grid-cols-[1.2fr_1.6fr_1.2fr_1.8fr_1.2fr_7rem_6rem] gap-2 font-medium text-sm bg-muted/50">
+      <div>PO Number</div>
+      <div>Vendor</div>
+      <div>PO Date</div>
+      <div>Due Date</div>
+      <div>Total</div>
+      <div>Status</div>
+      <div className="text-right">Actions</div>
+    </div>
+  ), []);
 
   return (
     <div className="space-y-4">
@@ -165,9 +153,7 @@ export default function PurchaseOrdersListPage() {
           <h1 className="text-2xl font-semibold">Purchase Orders</h1>
           <p className="text-sm text-muted-foreground">Track all purchase orders for procurement</p>
         </div>
-        <Button asChild>
-          <Link href="/purchase-orders/new">New Purchase Order</Link>
-        </Button>
+        <Button asChild><Link href="/purchase-orders/new">New Purchase Order</Link></Button>
       </div>
 
       {/* Search */}
@@ -175,16 +161,13 @@ export default function PurchaseOrdersListPage() {
         <Input
           placeholder="Search PO number or vendor…"
           value={q}
-          onChange={(e) => {
-            setPage(1);
-            setQ(e.target.value);
-          }}
+          onChange={(e) => { setPage(1); setQ(e.target.value); }}
         />
       </div>
 
       {/* List */}
       <div className="border rounded-xl overflow-x-auto">
-        <div className="divide-y min-w-[860px]">
+        <div className="divide-y min-w-[980px]">
           {header}
 
           {rows.map((po) => {
@@ -195,10 +178,10 @@ export default function PurchaseOrdersListPage() {
               : fmtID.format(totalAmount);
 
             return (
-                <div
+              <div
                 key={po.id}
-                className="p-3 grid grid-cols-[1.2fr_2fr_1.2fr_1.4fr_7rem_6rem] gap-2 items-center hover:bg-muted/30 transition-colors"
-                >
+                className="p-3 grid grid-cols-[1.2fr_1.6fr_1.2fr_1.8fr_1.2fr_7rem_6rem] gap-2 items-center hover:bg-muted/30 transition-colors"
+              >
                 <div className="font-medium">
                   <Link href={`/purchase-orders/${po.id}`} className="underline underline-offset-4">
                     {po.po_number}
@@ -206,34 +189,34 @@ export default function PurchaseOrdersListPage() {
                 </div>
 
                 <div>{po.vendor_name}</div>
-                <div>{po.delivery_date || '—'}</div>
+                <div>{po.po_date || '—'}</div>
+                <div>{duePill(po.due_date)}</div>
                 <div>{totalDisplay}</div>
 
                 <div className="flex justify-end">
-                    <StatusSelect
+                  <StatusSelect
                     id={po.id}
                     value={po.status}
                     onChanged={(next) => {
-                        setRows((prev) => prev.map((r) => (r.id === po.id ? { ...r, status: next } : r)));
+                      setRows((prev) => prev.map((r) => (r.id === po.id ? { ...r, status: next } : r)));
                     }}
-                    />
+                  />
                 </div>
 
                 {/* Actions */}
                 <div className="flex justify-end gap-1 shrink-0">
-                    {/* icon buttons */}
-                    <Link href={`/purchase-orders/${po.id}/edit`} className="p-2 hover:bg-muted rounded" aria-label="Edit">
+                  <Link href={`/purchase-orders/${po.id}/edit`} className="p-2 hover:bg-muted rounded" aria-label="Edit">
                     <Pencil size={16} />
-                    </Link>
-                    <button
+                  </Link>
+                  <button
                     onClick={() => onDelete(po.id)}
                     className="p-2 text-red-600 hover:bg-red-50 rounded"
                     aria-label="Delete"
-                    >
+                  >
                     <Trash2 size={16} />
-                    </button>
+                  </button>
                 </div>
-                </div>
+              </div>
             );
           })}
 
@@ -245,15 +228,9 @@ export default function PurchaseOrdersListPage() {
 
       {/* Pagination */}
       <div className="flex items-center justify-end gap-2">
-        <Button variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-          Prev
-        </Button>
-        <div className="text-sm">
-          Page {page} / {Math.max(1, Math.ceil(total / pageSize))}
-        </div>
-        <Button variant="outline" disabled={page >= Math.ceil(total / pageSize)} onClick={() => setPage((p) => p + 1)}>
-          Next
-        </Button>
+        <Button variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</Button>
+        <div className="text-sm">Page {page} / {Math.max(1, Math.ceil(total / pageSize))}</div>
+        <Button variant="outline" disabled={page >= Math.ceil(total / pageSize)} onClick={() => setPage((p) => p + 1)}>Next</Button>
       </div>
     </div>
   );

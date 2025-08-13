@@ -55,6 +55,14 @@ const NAV: NavGroup[] = [
       { label: 'RAB Allocations', href: '/finance/rab-allocations' },
     ],
   },
+    {
+    key: 'settings',
+    label: 'Settings',
+    icon: Settings2,
+    items: [
+      { label: 'Bank Accounts', href: '/settings/finance/bank-accounts' },
+    ],
+  },
   {
     key: 'reports',
     label: 'Reports',

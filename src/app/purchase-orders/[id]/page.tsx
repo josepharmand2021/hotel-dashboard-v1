@@ -1,7 +1,6 @@
-// src/app/purchase-orders/[id]/page.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
@@ -20,21 +19,22 @@ const fmtID = new Intl.NumberFormat('id-ID');
 
 function StatusBadge({ status }: { status?: string }) {
   const s = (status || '').toLowerCase();
-
   switch (s) {
-    case 'draft':
-      return <Badge variant="outline">Draft</Badge>;
-    case 'sent':
-      return <Badge variant="secondary">Sent</Badge>;
-    case 'completed':
-      return <Badge>Completed</Badge>;
-    case 'cancelled':
-      return <Badge variant="destructive">Cancelled</Badge>;
-    default:
-      return <Badge variant="outline">Completed</Badge>;
+    case 'draft': return <Badge variant="outline">Draft</Badge>;
+    case 'sent': return <Badge variant="secondary">Sent</Badge>;
+    case 'completed': return <Badge>Completed</Badge>;
+    case 'cancelled': return <Badge variant="destructive">Cancelled</Badge>;
+    default: return <Badge variant="outline">{status || '—'}</Badge>;
   }
 }
 
+function aging(due?: string | null) {
+  if (!due) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(due); d.setHours(0,0,0,0);
+  const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
+  return diff; // negative = overdue
+}
 
 export default function PurchaseOrderDetailPage() {
   const router = useRouter();
@@ -56,10 +56,7 @@ export default function PurchaseOrderDetailPage() {
     }
   };
 
-  useEffect(() => {
-    if (Number.isFinite(id)) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  useEffect(() => { if (Number.isFinite(id)) load(); /* eslint-disable-next-line */ }, [id]);
 
   const onDelete = async () => {
     if (!confirm('Delete this purchase order?')) return;
@@ -71,6 +68,9 @@ export default function PurchaseOrderDetailPage() {
       toast.error(e.message || 'Delete failed');
     }
   };
+
+  const due = po?.due_date_effective || null;
+  const dayLeft = useMemo(() => aging(due), [due]);
 
   if (loading) return <div>Loading…</div>;
   if (!po) return <div>Not found.</div>;
@@ -89,36 +89,27 @@ export default function PurchaseOrderDetailPage() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold">PO {po.po_number}</h1>
-          <p className="text-sm text-muted-foreground">
-            Vendor: {po.vendor?.name || '—'}
-          </p>
+          <p className="text-sm text-muted-foreground">Vendor: {po.vendor?.name || '—'}</p>
         </div>
         <div className="flex gap-2">
           <StatusBadge status={po.status} />
-          <Button asChild variant="outline">
-            <Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href={`/purchase-orders/${po.id}/print`}>Print</Link>
-          </Button>
-
-          {/* Print & Receive can be wired later */}
-          {/* <Button variant="outline">Print</Button> */}
+          <Button asChild variant="outline"><Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link></Button>
+          <Button asChild variant="outline"><Link href={`/purchase-orders/${po.id}/print`}>Print</Link></Button>
           <Button variant="destructive" onClick={onDelete}>Delete</Button>
         </div>
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>PO Information</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>PO Information</CardTitle></CardHeader>
         <Separator />
         <CardContent className="grid md:grid-cols-2 gap-6">
           <div className="space-y-2">
             <div className="text-sm text-muted-foreground">PO Number</div>
             <div className="font-medium">{po.po_number}</div>
+
             <div className="text-sm text-muted-foreground mt-4">PO Date</div>
             <div className="font-medium">{po.po_date || '—'}</div>
+
             <div className="text-sm text-muted-foreground mt-4">Delivery Date</div>
             <div className="font-medium">{po.delivery_date || '—'}</div>
           </div>
@@ -126,12 +117,33 @@ export default function PurchaseOrderDetailPage() {
           <div className="space-y-2">
             <div className="text-sm text-muted-foreground">Vendor</div>
             <div className="font-medium">{po.vendor?.name || '—'}</div>
+
             <div className="text-sm text-muted-foreground mt-4">Tax</div>
             <div className="font-medium">
               {po.is_tax_included ? 'Included' : 'Excluded'} ({po.tax_percent}%)
             </div>
-            <div className="text-sm text-muted-foreground mt-4">Status</div>
-            <div><StatusBadge status={po.status} /></div>
+
+            <div className="text-sm text-muted-foreground mt-4">Payment Term</div>
+            <div className="font-medium">
+              {po.effective_term_code
+                ? po.effective_term_code === 'NET'
+                  ? `NET ${po.effective_term_days} hari`
+                  : po.effective_term_code
+                : '—'}
+            </div>
+
+            <div className="text-sm text-muted-foreground mt-4">Due Date (Effective)</div>
+            <div className="font-medium">
+              {due || '—'}
+              {!!due && (
+                <span className={`ml-2 text-xs px-2 py-0.5 rounded
+                  ${dayLeft! < 0 ? 'bg-red-100 text-red-700' : dayLeft! <= 7 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                  {dayLeft! < 0 ? `${Math.abs(dayLeft!)} hari lewat jatuh tempo` :
+                   dayLeft === 0 ? 'Jatuh tempo hari ini' :
+                   `Jatuh tempo ${dayLeft} hari lagi`}
+                </span>
+              )}
+            </div>
           </div>
 
           {po.note && (
@@ -144,9 +156,7 @@ export default function PurchaseOrderDetailPage() {
 
         <Separator />
 
-        <CardHeader>
-          <CardTitle>Items</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Items</CardTitle></CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
@@ -172,29 +182,21 @@ export default function PurchaseOrderDetailPage() {
           </Table>
 
           <div className="mt-6 flex flex-col items-end gap-1 text-sm">
-            <div className="w-full sm:w-80 flex justify-between">
-              <span>Subtotal</span>
-              <span>{fmtID.format(po.subtotal)}</span>
-            </div>
+            <div className="w-full sm:w-80 flex justify-between"><span>Subtotal</span><span>{fmtID.format(po.subtotal)}</span></div>
             <div className="w-full sm:w-80 flex justify-between text-muted-foreground">
               <span>Tax {po.tax_percent}% {po.is_tax_included ? '(included)' : ''}</span>
               <span>{po.is_tax_included ? '—' : fmtID.format(po.taxAmount)}</span>
             </div>
             <Separator className="my-2 w-full sm:w-80" />
             <div className="w-full sm:w-80 flex justify-between font-semibold text-base">
-              <span>Total</span>
-              <span>{fmtID.format(po.total)}</span>
+              <span>Total</span><span>{fmtID.format(po.total)}</span>
             </div>
           </div>
         </CardContent>
 
         <CardFooter className="justify-end gap-2 pb-6">
           <Button variant="outline" onClick={() => history.back()}>Back</Button>
-          <Button asChild>
-            <Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link>
-          </Button>
-          {/* <Button variant="outline">Receive (GRN)</Button> */}
-          {/* <Button variant="outline">Print</Button> */}
+          <Button asChild><Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link></Button>
         </CardFooter>
       </Card>
     </div>
