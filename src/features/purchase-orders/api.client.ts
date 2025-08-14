@@ -9,33 +9,45 @@ const pickOne = <T,>(v: T | T[] | null | undefined): T | null =>
 export type ExpenseStatus = 'draft'|'posted'|'void';
 export type ExpenseSource = 'PT'|'RAB'|'PETTY';
 export type PaymentStatus = 'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
-
-// Simple pickers — change table names if needed
+// ==== Types ====
 export type ExpenseCategory = { id: number; name: string };
 export type ExpenseSubcategory = { id: number; name: string; category_id: number };
 
+// ==== List categories ====
 export async function listExpenseCategories(): Promise<ExpenseCategory[]> {
   const { data, error } = await supabase
-    .from('expense_categories')    // <- rename if your table name differs
+    .from('categories')                 // <-- ganti jika nama tabel berbeda
     .select('id, name')
     .order('name');
   if (error) throw error;
-  return (data ?? []).map((r: any) => ({ id: Number(r.id), name: String(r.name) }));
+  return (data ?? []).map((r: any) => ({ id: Number(r.id), name: String(r.name ?? '') }));
 }
 
-export async function listExpenseSubcategories(categoryId: number): Promise<ExpenseSubcategory[]> {
+// ==== List subcategories (ambil semua; nanti di-filter di FE) ====
+export async function listExpenseSubcategories(): Promise<ExpenseSubcategory[]> {
   const { data, error } = await supabase
-    .from('expense_subcategories') // <- rename if needed
+    .from('subcategories')              // <-- ganti jika nama tabel berbeda
     .select('id, name, category_id')
-    .eq('category_id', categoryId)
+    .order('category_id')
     .order('name');
   if (error) throw error;
   return (data ?? []).map((r: any) => ({
     id: Number(r.id),
-    name: String(r.name),
-    category_id: Number(r.category_id),
+    name: String(r.name ?? ''),
+    category_id: Number(r.category_id ?? 0),
   }));
 }
+
+// ==== Filter utility ====
+export function filterSubcatsByCategory(
+  allSubs: ExpenseSubcategory[],
+  categoryId: number | null
+): ExpenseSubcategory[] {
+  if (!categoryId) return [];
+  return allSubs.filter(s => s.category_id === categoryId);
+}
+
+
 
 export type POListRow = {
   id: number;
@@ -233,29 +245,22 @@ export async function deletePurchaseOrder(id: number) {
    Finance: paid/outstanding dari view v_po_finance
    (opsional) kirimkan due_date_effective agar bisa derive OVERDUE
 ========================= */
-export async function getPOFinance(poId: number, due_date_effective?: string) {
+// src/features/purchase-orders/api.client.ts
+export async function getPOFinance(poId: number) {
   const { data, error } = await supabase
     .from('v_po_finance')
-    .select('*')
+    .select('id,total,paid')
     .eq('id', poId)
-    .single();
+    .maybeSingle(); // penting: tidak error kalau belum ada row
+
   if (error) throw error;
 
-  const total = Number(data.total || 0);
-  const paid = Number(data.paid || 0);
-  const calc = derivePayment(total, paid, due_date_effective ?? null);
+  const total = Number(data?.total ?? 0);
+  const paid  = Number(data?.paid  ?? 0);
+  const outstanding = Math.max(total - paid, 0);
 
-  return {
-    id: Number(data.id),
-    po_number: String(data.po_number ?? ''),
-    total,
-    paid: calc.paid,
-    outstanding: calc.balance,
-    payment_status: calc.status as PaymentStatus,
-    days_overdue: calc.days_overdue,
-  };
+  return { id: poId, total, paid, outstanding };
 }
-
 /* =========================
    List payment allocations utk 1 PO
 ========================= */

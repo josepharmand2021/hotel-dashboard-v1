@@ -2,8 +2,16 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { payPO, listExpenseCategories, listExpenseSubcategories,
-         type ExpenseCategory, type ExpenseSubcategory } from '@/features/purchase-orders/api.client';
+
+import {
+  payPO,
+  getPOFinance,                         // ← fetch fresh total/paid/outstanding
+  listExpenseCategories,
+  listExpenseSubcategories,
+  filterSubcatsByCategory,
+  type ExpenseCategory,
+  type ExpenseSubcategory,
+} from '@/features/purchase-orders/api.client';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,7 +20,6 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const fmtID = new Intl.NumberFormat('id-ID');
-
 type Source = 'PT' | 'RAB' | 'PETTY';
 
 type PODialogPO = {
@@ -37,7 +44,11 @@ export default function PayFromPODialog({
   defaultAmount?: number;
   onSuccess?: () => void;
 }) {
-  const computedOutstanding = useMemo(() => {
+  const vendorId = po.vendor?.id ?? 0;
+
+  // ===== Outstanding (1 source of truth) =====
+  // base from props (fallback), then refresh from server when dialog opens
+  const propRemaining = useMemo(() => {
     if (typeof po.outstanding === 'number') return Math.max(po.outstanding, 0);
     if (typeof po.total === 'number' && typeof po.paid === 'number') {
       return Math.max(po.total - po.paid, 0);
@@ -45,67 +56,96 @@ export default function PayFromPODialog({
     return Math.max(defaultAmount, 0);
   }, [po, defaultAmount]);
 
-  const vendorId = po.vendor?.id ?? 0;
+  const [remaining, setRemaining] = useState<number>(propRemaining);
 
+  // ===== Form state =====
   const [submitting, setSubmitting] = useState(false);
   const [source, setSource] = useState<Source>('PT');
   const [expenseDate, setExpenseDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [amount, setAmount] = useState<number>(Number(computedOutstanding || 0));
-
-  // pickers
-  const [cats, setCats] = useState<ExpenseCategory[]>([]);
-  const [subs, setSubs] = useState<ExpenseSubcategory[]>([]);
-  const [categoryId, setCategoryId] = useState<number | null>(null);
-  const [subcategoryId, setSubcategoryId] = useState<number | null>(null);
-
+  const [amount, setAmount] = useState<number>(propRemaining);
   const [invoiceNo, setInvoiceNo] = useState('');
   const [note, setNote] = useState('');
-  const [shareholderId, setShareholderId] = useState<number | ''>(''); // RAB
-  const [cashboxId, setCashboxId] = useState<number | ''>('');         // PETTY
+  const [shareholderId, setShareholderId] = useState<number | ''>('');
+  const [cashboxId, setCashboxId] = useState<number | ''>('');
 
+  // ===== Categories =====
+  const [cats, setCats] = useState<ExpenseCategory[]>([]);
+  const [allSubs, setAllSubs] = useState<ExpenseSubcategory[]>([]);
+  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const subs = useMemo(() => filterSubcatsByCategory(allSubs, categoryId), [allSubs, categoryId]);
+  const [subcategoryId, setSubcategoryId] = useState<number | null>(null);
+
+  // Load lists when dialog opens (NO auto-pick)
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
+
     (async () => {
       try {
-        const cs = await listExpenseCategories();
-        setCats(cs);
-        if (cs.length) {
-          setCategoryId(cs[0].id);
-        }
+        const [catRows, subRows] = await Promise.all([
+          listExpenseCategories(),
+          listExpenseSubcategories(),
+        ]);
+        if (cancelled) return;
+        setCats(catRows);
+        setAllSubs(subRows);
+        setCategoryId(null);
+        setSubcategoryId(null);
       } catch (e: any) {
-        toast.error(e?.message || 'Failed to load categories');
+        if (!cancelled) toast.error(e?.message || 'Failed to load categories');
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
+  // Reset subcategory when category changes
   useEffect(() => {
-    if (!open || !categoryId) { setSubs([]); setSubcategoryId(null); return; }
+    setSubcategoryId(null);
+  }, [categoryId]);
+
+  // When dialog opens, sync amount & fetch fresh outstanding
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+
+    // reset to propRemaining first (snappy)
+    setRemaining(propRemaining);
+    setAmount(propRemaining);
+
+    // then refresh from server
     (async () => {
       try {
-        const ss = await listExpenseSubcategories(categoryId);
-        setSubs(ss);
-        setSubcategoryId(ss.length ? ss[0].id : null);
-      } catch (e: any) {
-        toast.error(e?.message || 'Failed to load subcategories');
+        const fin = await getPOFinance(po.id);
+        if (cancelled) return;
+        const fresh = Math.max(fin.outstanding ?? (fin.total - fin.paid) ?? 0, 0);
+        setRemaining(fresh);
+        setAmount(prev => Math.min(prev ?? fresh, fresh)); // clamp to fresh remaining
+      } catch {
+        // keep the prop fallback if fetch fails
       }
     })();
-  }, [open, categoryId]);
 
-  useEffect(() => {
-    // reset amount every time dialog opens with new outstanding
-    if (open) setAmount(Number(computedOutstanding || 0));
-  }, [open, computedOutstanding]);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, po.id, propRemaining]);
 
   const valid =
     vendorId > 0 &&
     amount > 0 &&
-    amount <= Math.max(computedOutstanding, 0) &&
+    amount <= Math.max(remaining, 0) &&
     !!expenseDate &&
     !!categoryId &&
     !!subcategoryId;
 
   async function onSubmit() {
-    if (!valid) { toast.error('Lengkapi data pembayaran'); return; }
+    if (!valid) {
+      toast.error('Lengkapi data dan pastikan amount tidak melebihi outstanding.');
+      return;
+    }
     try {
       setSubmitting(true);
       await payPO(po.id, {
@@ -113,8 +153,8 @@ export default function PayFromPODialog({
         expense_date: expenseDate,
         amount: Number(amount),
         vendor_id: vendorId,
-        category_id: Number(categoryId),
-        subcategory_id: Number(subcategoryId),
+        category_id: Number(categoryId),       // user-picked
+        subcategory_id: Number(subcategoryId), // filtered by category
         status: 'posted',
         shareholder_id: source === 'RAB' ? (shareholderId ? Number(shareholderId) : null) : null,
         cashbox_id: source === 'PETTY' ? (cashboxId ? Number(cashboxId) : null) : null,
@@ -158,7 +198,12 @@ export default function PayFromPODialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-2">
               <Label>Expense Date</Label>
-              <Input type="date" value={expenseDate} onChange={(e) => setExpenseDate(e.target.value)} disabled={submitting} />
+              <Input
+                type="date"
+                value={expenseDate}
+                onChange={(e) => setExpenseDate(e.target.value)}
+                disabled={submitting}
+              />
             </div>
             <div className="grid gap-2">
               <Label>Amount</Label>
@@ -166,22 +211,27 @@ export default function PayFromPODialog({
                 <Input
                   type="number"
                   min={1}
-                  max={Math.max(computedOutstanding, 0)}
+                  max={Math.max(remaining, 0)}
                   value={amount}
                   onChange={(e) => setAmount(Number(e.target.value || 0))}
                   disabled={submitting}
                 />
-                <Button type="button" variant="outline" onClick={() => setAmount(Math.max(computedOutstanding, 0))} disabled={submitting}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAmount(Math.max(remaining, 0))}
+                  disabled={submitting}
+                >
                   Max
                 </Button>
               </div>
               <div className="text-xs text-muted-foreground">
-                Outstanding: <b>Rp {fmtID.format(Math.max(computedOutstanding, 0))}</b>
+                Outstanding: <b>Rp {fmtID.format(Math.max(remaining, 0))}</b>
               </div>
             </div>
           </div>
 
-          {/* Category & Subcategory pickers */}
+          {/* Category & Subcategory */}
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-2">
               <Label>Category</Label>
@@ -190,25 +240,48 @@ export default function PayFromPODialog({
                 onValueChange={(v) => setCategoryId(Number(v))}
                 disabled={submitting || cats.length === 0}
               >
-                <SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose category" />
+                </SelectTrigger>
                 <SelectContent>
-                  {cats.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {cats.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
+
             <div className="grid gap-2">
               <Label>Subcategory</Label>
               <Select
                 value={subcategoryId ? String(subcategoryId) : undefined}
                 onValueChange={(v) => setSubcategoryId(Number(v))}
-                disabled={submitting || subs.length === 0}
+                disabled={submitting || !categoryId || subs.length === 0}
               >
-                <SelectTrigger><SelectValue placeholder="Choose subcategory" /></SelectTrigger>
+                <SelectTrigger>
+                  <SelectValue placeholder={categoryId ? 'Choose subcategory' : 'Pick category first'} />
+                </SelectTrigger>
                 <SelectContent>
-                  {subs.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+                  {subs.map((s) => (
+                    <SelectItem key={s.id} value={String(s.id)}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          {/* Optional fields */}
+          <div className="grid gap-2">
+            <Label>Invoice No (optional)</Label>
+            <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} disabled={submitting} />
+          </div>
+          <div className="grid gap-2">
+            <Label>Note (optional)</Label>
+            <Input value={note} onChange={(e) => setNote(e.target.value)} disabled={submitting} />
           </div>
 
           {/* Conditional extras */}
@@ -234,20 +307,12 @@ export default function PayFromPODialog({
               />
             </div>
           )}
-
-          {/* Optional fields */}
-          <div className="grid gap-2">
-            <Label>Invoice No (optional)</Label>
-            <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} disabled={submitting} />
-          </div>
-          <div className="grid gap-2">
-            <Label>Note (optional)</Label>
-            <Input value={note} onChange={(e) => setNote(e.target.value)} disabled={submitting} />
-          </div>
         </div>
 
         <DialogFooter className="mt-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>Cancel</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
           <Button onClick={onSubmit} disabled={submitting || !valid}>
             {submitting ? 'Saving…' : 'Record Payment'}
           </Button>
