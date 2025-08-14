@@ -8,6 +8,11 @@ export type Subcategory = { id: number; name: string; category_id: number };
 export type Shareholder = { id: number; name: string };
 export type Vendor = { id: number; name: string };
 
+/* ========= helpers ========= */
+
+const pickOne = <T,>(v: T | T[] | null | undefined): T | null =>
+  Array.isArray(v) ? (v[0] ?? null) : (v ?? null);
+
 /* ========= lookups ========= */
 
 export async function listCategories(): Promise<Category[]> {
@@ -35,15 +40,12 @@ export async function listActiveShareholders(): Promise<Shareholder[]> {
 }
 
 export async function listVendors(): Promise<Vendor[]> {
-  const { data, error } = await supabase
-    .from('vendors')
-    .select('id,name')
-    .order('name', { ascending: true });
+  const { data, error } = await supabase.from('vendors').select('id,name').order('name', { ascending: true });
   if (error) throw error;
   return data || [];
 }
 
-/* ========= helpers ========= */
+/* ========= commands ========= */
 
 type BaseExpensePayload = {
   source: 'RAB' | 'PT' | 'PETTY';
@@ -60,7 +62,6 @@ type BaseExpensePayload = {
 };
 
 function normalizeForInsert(p: BaseExpensePayload) {
-  // guard: wajibkan field sesuai source
   if (p.source === 'RAB' && !p.shareholder_id) throw new Error('Shareholder wajib diisi untuk sumber RAB');
   if (p.source === 'PETTY' && !p.cashbox_id) throw new Error('Cashbox wajib diisi untuk sumber PETTY');
 
@@ -79,9 +80,7 @@ function normalizeForInsert(p: BaseExpensePayload) {
   };
 }
 
-/* ========= commands ========= */
-
-export async function createExpense(payload: BaseExpensePayload) {
+export async function createExpense(payload: BaseExpensePayload): Promise<{ id: number }> {
   const body: any = normalizeForInsert(payload);
 
   // Auto-assign bank PT saat POSTED & source PT
@@ -89,40 +88,33 @@ export async function createExpense(payload: BaseExpensePayload) {
     body.account_id = await getDefaultPTBankId();
   }
 
-  const { error } = await supabase.from('expenses').insert(body);
+  // minta balik kolom id
+  const { data, error } = await supabase
+    .from('expenses')
+    .insert(body)
+    .select('id')     // <— penting
+    .single();
+
   if (error) throw error;
+  return { id: Number(data.id) };
 }
 
-export async function updateExpense(
-  id: number,
-  payload: BaseExpensePayload
-) {
+export async function updateExpense(id: number, payload: BaseExpensePayload) {
   const body: any = normalizeForInsert(payload);
-
-  // Auto-assign bank PT saat POSTED & source PT
   if (body.source === 'PT' && body.status === 'posted') {
     body.account_id = await getDefaultPTBankId();
   }
-
   const { error } = await supabase.from('expenses').update(body).eq('id', id);
   if (error) throw error;
 }
 
 export async function setExpenseStatus(id: number, status: 'draft'|'posted'|'void') {
   const patch: any = { status };
-
-  // Jika berubah ke posted & sumber PT, isi bank default kalau belum ada
   if (status === 'posted') {
-    // ambil source & account_id terkini dulu supaya aman
-    const { data: row, error: e0 } = await supabase.from('expenses')
-      .select('source, account_id').eq('id', id).single();
+    const { data: row, error: e0 } = await supabase.from('expenses').select('source, account_id').eq('id', id).single();
     if (e0) throw e0;
-
-    if (row?.source === 'PT' && !row?.account_id) {
-      patch.account_id = await getDefaultPTBankId();
-    }
+    if (row?.source === 'PT' && !row?.account_id) patch.account_id = await getDefaultPTBankId();
   }
-
   const { error } = await supabase.from('expenses').update(patch).eq('id', id);
   if (error) throw error;
 }
@@ -135,7 +127,6 @@ export async function deleteExpense(id: number) {
 /* ========= queries ========= */
 
 function monthToRange(month: string): { from: string; to: string } {
-  // 'YYYY-MM' -> [YYYY-MM-01, first day of next month)
   const y = Number(month.slice(0, 4));
   const m = Number(month.slice(5, 7));
   const from = `${y}-${String(m).padStart(2, '0')}-01`;
@@ -162,7 +153,10 @@ export async function listExpenses(filters: ExpenseListFilters) {
       categories:categories(name),
       subcategories:subcategories(name),
       shareholders:shareholders(name),
-      vendors:vendors(name)
+      vendors:vendors(name),
+      po_expense_allocations:po_expense_allocations(
+        purchase_orders:purchase_orders(id, po_number)
+      )
     `, { count: 'exact', head: false });
 
   if (month && /^\d{4}-\d{2}$/.test(month)) {
@@ -184,35 +178,45 @@ export async function listExpenses(filters: ExpenseListFilters) {
     query = query.or(`vendor_name.ilike.${term},invoice_no.ilike.${term},note.ilike.${term}`);
   }
 
-  query = query.order(orderBy, { ascending: orderDir === 'asc' });
-
-  const fromIdx = (page - 1) * pageSize;
-  const toIdx = fromIdx + pageSize - 1;
-  query = query.range(fromIdx, toIdx);
+  query = query.order(orderBy, { ascending: orderDir === 'asc' })
+               .range((page - 1) * pageSize, (page * pageSize) - 1);
 
   const { data, error, count } = await query;
   if (error) throw error;
 
-  const rows: ExpenseListItem[] = (data || []).map((r: any) => ({
-    id: r.id,
-    expense_date: r.expense_date,
-    period_month: r.period_month,
-    source: r.source,
-    status: r.status,
-    amount: r.amount,
-    category_id: r.category_id,
-    subcategory_id: r.subcategory_id,
-    category_name: r.categories?.name ?? '',
-    subcategory_name: r.subcategories?.name ?? '',
-    shareholder_id: r.shareholder_id ?? null,
-    shareholder_name: r.shareholders?.name ?? null,
-    vendor_id: r.vendor_id ?? null,
-    vendor_name: r.vendor_name ?? r.vendors?.name ?? null,
-    invoice_no: r.invoice_no ?? null,
-    note: r.note ?? null,
-    created_at: r.created_at,
-    updated_at: r.updated_at,
-  }));
+  const rows: ExpenseListItem[] = (data || []).map((r: any) => {
+    const po_refs = (() => {
+      const list = (r.po_expense_allocations || [])
+        .map((a: any) => pickOne(a?.purchase_orders))
+        .filter(Boolean)
+        .map((po: any) => ({ id: Number(po.id), po_number: String(po.po_number || '') }));
+      const uniq = new Map<number, { id:number; po_number:string }>();
+      for (const x of list) uniq.set(x.id, x);
+      return [...uniq.values()];
+    })();
+
+    return {
+      id: r.id,
+      expense_date: r.expense_date,
+      period_month: r.period_month,
+      source: r.source,
+      status: r.status,
+      amount: r.amount,
+      category_id: r.category_id,
+      subcategory_id: r.subcategory_id,
+      category_name: r.categories?.name ?? '',
+      subcategory_name: r.subcategories?.name ?? '',
+      shareholder_id: r.shareholder_id ?? null,
+      shareholder_name: r.shareholders?.name ?? null,
+      vendor_id: r.vendor_id ?? null,
+      vendor_name: r.vendor_name ?? r.vendors?.name ?? null,
+      invoice_no: r.invoice_no ?? null,
+      note: r.note ?? null,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      po_refs, // ⬅️ NEW
+    };
+  });
 
   return { rows, count: count ?? 0 };
 }
@@ -238,19 +242,10 @@ export async function getExpense(id: number): Promise<ExpenseDetail> {
 }
 
 export async function getBudgetProgress(args: {
-  period_month: string;      // 'YYYY-MM-01'
-  category_id: number;
-  subcategory_id: number;
-}): Promise<{
   period_month: string;
   category_id: number;
   subcategory_id: number;
-  budget_amount: number;
-  realised_monthly: number;
-  realised_cumulative: number;
-  remaining: number;
-  realisation_pct: number | null;
-} | null> {
+}) {
   const { data, error } = await supabase
     .from('v_budget_progress_monthly')
     .select('*')

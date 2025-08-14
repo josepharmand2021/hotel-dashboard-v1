@@ -2,7 +2,7 @@
 import { supabase } from "@/lib/supabase/client";
 import { getDefaultPTBankId } from "@/features/bank-accounts/api";
 
-/** -------- Types -------- */
+/* ========= Types ========= */
 export type CashBox = { id: number; name: string; created_at?: string };
 
 export type BoxSummary = {
@@ -17,11 +17,11 @@ export type BoxSummary = {
 
 export type LedgerRow = {
   cashbox_id: number;
-  event_date: string; // 'YYYY-MM-DD'
+  event_date: string;
   event_type: "topup" | "settlement" | "adjust_in" | "adjust_out" | "expense";
   expense_id: number | null;
-  amount: number;         // nilai asli (positif)
-  signed_amount: number;  // +/-
+  amount: number;
+  signed_amount: number;
   ref_no: string | null;
   note: string | null;
   source: "txn" | "expense";
@@ -30,10 +30,9 @@ export type LedgerRow = {
   shareholder_name?: string | null;
 };
 
-/** -------- Helpers -------- */
 const r = (n: number) => Math.round(n);
 
-/** -------- Boxes -------- */
+/* ========= Boxes ========= */
 export async function listCashBoxes(): Promise<CashBox[]> {
   const { data, error } = await supabase
     .from("petty_cash_boxes")
@@ -62,7 +61,7 @@ export async function createCashBox(name: string): Promise<{ id: number }> {
   return { id: data.id };
 }
 
-/** -------- Ledger -------- */
+/* ========= Ledger ========= */
 export async function listLedger(
   cashboxId: number,
   from?: string,
@@ -82,17 +81,13 @@ export async function listLedger(
   return (data || []) as LedgerRow[];
 }
 
-/** -------- Top Up (PT / RAB) --------
- * - source='PT' -> pakai RPC pt_to_petty_topup, lalu isi bank_account_id (default bila tidak dikirim)
- * - source='RAB' -> pakai RPC rab_to_petty_topup, bank_account_id selalu NULL
- */
+/* ========= Top Up (tanpa subkategori) ========= */
 export async function addTopup(payload: {
   source: "PT" | "RAB";
   cashbox_id: number;
-  txn_date: string; // 'YYYY-MM-DD'
+  txn_date: string;       // 'YYYY-MM-DD'
   amount: number;
-  transfer_subcategory_id: number;
-  shareholder_id?: number | null; // wajib saat source='RAB'
+  shareholder_id?: number | null; // opsional (dipakai kalau kamu nanti simpan ke kolom di txns)
   note?: string | null;
   bank_account_id?: number | null; // opsional: untuk PT; jika kosong -> default
   ref_no?: string | null;
@@ -102,32 +97,32 @@ export async function addTopup(payload: {
     cashbox_id,
     txn_date,
     amount,
-    transfer_subcategory_id,
-    shareholder_id,
+    shareholder_id, // belum dipakai kalau tabel belum punya kolom ini
     note,
     bank_account_id,
     ref_no,
   } = payload;
 
-  if (!transfer_subcategory_id) {
-    throw new Error('transfer_subcategory_id wajib diisi (Subkategori "Transfer Kas Kecil").');
-  }
+  if (!txn_date) throw new Error("Tanggal wajib");
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error("Amount harus > 0");
 
+  // ---- RAB -> Petty (tanpa subkategori)
   if (source === "RAB") {
-    if (!shareholder_id) throw new Error("shareholder_id wajib diisi untuk top-up dari RAB.");
-
-    const { data, error } = await supabase.rpc("rab_to_petty_topup", {
-      p_shareholder_id: shareholder_id,
+    const { data, error } = await supabase.rpc("rab_to_petty_topup_api", {
+      p_shareholder_id: shareholder_id ?? null,
       p_amount: r(amount),
       p_cashbox_id: cashbox_id,
-      p_transfer_subcategory_id: transfer_subcategory_id,
       p_txn_date: txn_date,
       p_note: note ?? null,
     });
     if (error) throw new Error(error.message);
 
-    // RAB → bank_account_id selalu NULL (tidak relevan), tapi simpan ref/note jika ada
-    const topupId = Array.isArray(data) ? data[0]?.topup_txn_id : (data as any)?.topup_txn_id;
+    const topupId =
+      Array.isArray(data) ? Number(data[0]?.topup_txn_id) :
+      (data && typeof data === "object" && "topup_txn_id" in data) ? Number((data as any).topup_txn_id) :
+      Number(data) || null;
+
+    // Simpan ref/note bila ada (bank_account_id tetap NULL untuk RAB)
     if (topupId && (ref_no || note)) {
       const { error: updErr } = await supabase
         .from("petty_cash_txns")
@@ -135,23 +130,24 @@ export async function addTopup(payload: {
         .eq("id", topupId);
       if (updErr) throw new Error(updErr.message);
     }
-    return;
+    return { topup_txn_id: topupId ?? null };
   }
 
-  // PT → Petty
-  const { data, error } = await supabase.rpc("pt_to_petty_topup", {
+  // ---- PT -> Petty (tanpa subkategori)
+  const { data, error } = await supabase.rpc("pt_to_petty_topup_api", {
     p_amount: r(amount),
     p_cashbox_id: cashbox_id,
-    p_transfer_subcategory_id: transfer_subcategory_id,
     p_txn_date: txn_date,
     p_note: note ?? null,
   });
   if (error) throw new Error(error.message);
 
-  // Ambil id row topup yang baru
-  const topupId = Array.isArray(data) ? data[0]?.topup_txn_id : (data as any)?.topup_txn_id;
+  const topupId =
+    Array.isArray(data) ? Number(data[0]?.topup_txn_id) :
+    (data && typeof data === "object" && "topup_txn_id" in data) ? Number((data as any).topup_txn_id) :
+    Number(data) || null;
 
-  // Jika caller tidak mengirim bank_account_id → pakai default PT bank
+  // Isi bank default PT bila tidak dikirim
   const bankId = bank_account_id ?? (await getDefaultPTBankId());
 
   if (topupId && (bankId || ref_no || note)) {
@@ -165,9 +161,11 @@ export async function addTopup(payload: {
       .eq("id", topupId);
     if (updErr) throw new Error(updErr.message);
   }
+
+  return { topup_txn_id: topupId ?? null };
 }
 
-/** -------- Settlement (setor kembali ke PT) -------- */
+/* ========= Settlement ========= */
 export async function addSettlement(payload: {
   cashbox_id: number;
   txn_date: string;
@@ -190,7 +188,7 @@ export async function addSettlement(payload: {
   if (error) throw new Error(error.message);
 }
 
-/** -------- Adjustment (koreksi saldo) -------- */
+/* ========= Adjustment ========= */
 export async function addAdjust(payload: {
   cashbox_id: number;
   txn_date: string;

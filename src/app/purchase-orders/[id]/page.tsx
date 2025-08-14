@@ -1,6 +1,7 @@
+// src/app/purchase-orders/[id]/page.tsx
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
@@ -11,8 +12,16 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/componen
 import { Separator } from '@/components/ui/separator';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import PaymentsCard from '@/features/purchase-orders/PaymentsCard';
 
-import { getPurchaseOrder, deletePurchaseOrder } from '@/features/purchase-orders/api';
+// ✅ pakai API CLIENT di komponen client
+import { getPurchaseOrder} from '@/features/purchase-orders/api';
+import { deletePurchaseOrder } from '@/features/purchase-orders/api.client';
+
+
+
+import PaymentStatusBadge from '@/features/purchase-orders/PaymentStatusBadge';
+import PayFromPODialog from '@/features/purchase-orders/PayFromPODialog';
 
 type Detail = Awaited<ReturnType<typeof getPurchaseOrder>>;
 const fmtID = new Intl.NumberFormat('id-ID');
@@ -22,18 +31,11 @@ function StatusBadge({ status }: { status?: string }) {
   switch (s) {
     case 'draft': return <Badge variant="outline">Draft</Badge>;
     case 'sent': return <Badge variant="secondary">Sent</Badge>;
+    case 'delivered': return <Badge>Delivered</Badge>;
     case 'completed': return <Badge>Completed</Badge>;
     case 'cancelled': return <Badge variant="destructive">Cancelled</Badge>;
-    default: return <Badge variant="outline">{status || '—'}</Badge>;
+    default: return <Badge variant="outline">—</Badge>;
   }
-}
-
-function aging(due?: string | null) {
-  if (!due) return null;
-  const today = new Date(); today.setHours(0,0,0,0);
-  const d = new Date(due); d.setHours(0,0,0,0);
-  const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
-  return diff; // negative = overdue
 }
 
 export default function PurchaseOrderDetailPage() {
@@ -43,6 +45,11 @@ export default function PurchaseOrderDetailPage() {
 
   const [po, setPo] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // pay dialog
+  const [payOpen, setPayOpen] = useState(false);
+  // force reload PaymentsCard setelah sukses bayar
+  const [paymentsTick, setPaymentsTick] = useState(0);
 
   const load = async () => {
     try {
@@ -56,7 +63,10 @@ export default function PurchaseOrderDetailPage() {
     }
   };
 
-  useEffect(() => { if (Number.isFinite(id)) load(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => {
+    if (Number.isFinite(id)) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   const onDelete = async () => {
     if (!confirm('Delete this purchase order?')) return;
@@ -69,11 +79,37 @@ export default function PurchaseOrderDetailPage() {
     }
   };
 
-  const due = po?.due_date_effective || null;
-  const dayLeft = useMemo(() => aging(due), [due]);
-
   if (loading) return <div>Loading…</div>;
   if (!po) return <div>Not found.</div>;
+
+  // --- Totals (prefer server-calculated) ---
+  const items = po.items ?? [];
+  const subtotal =
+    po.subtotal != null
+      ? Number(po.subtotal)
+      : items.reduce((sum: number, it: any) => sum + (Number(it.amount ?? it.qty * it.unit_price) || 0), 0);
+
+  const taxPct = Number(po.tax_percent ?? 0);
+
+  const taxAmount =
+    po.taxAmount != null
+      ? Number(po.taxAmount)
+      : (po.is_tax_included ? 0 : Math.round(subtotal * (taxPct / 100)));
+
+  const total =
+    po.total != null ? Number(po.total) : (po.is_tax_included ? subtotal : subtotal + taxAmount);
+
+  // --- Finance summary (server fields first) ---
+  const paid = Number((po as any).paid ?? 0);
+  const balance = Number((po as any).outstanding ?? Math.max(total - paid, 0));
+
+  // --- Unified payment status (server preferred) ---
+  const paymentStatus = ((po as any).payment_status ??
+    (paid >= total - 0.5 ? 'PAID' : paid > 0 ? 'PARTIAL' : 'UNPAID')) as 'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
+  const daysOverdue = Number((po as any).days_overdue ?? 0);
+
+  // --- Due Date (neutral text) ---
+  const dueDate = (po as any).due_date_effective ?? '';
 
   return (
     <div className="max-w-5xl space-y-4">
@@ -93,16 +129,26 @@ export default function PurchaseOrderDetailPage() {
         </div>
         <div className="flex gap-2">
           <StatusBadge status={po.status} />
-          <Button asChild variant="outline"><Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link></Button>
-          <Button asChild variant="outline"><Link href={`/purchase-orders/${po.id}/print`}>Print</Link></Button>
+          {balance > 0 && (
+            <Button onClick={() => setPayOpen(true)}>Pay</Button>
+          )}
+          <Button asChild variant="outline">
+            <Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href={`/purchase-orders/${po.id}/print`}>Print</Link>
+          </Button>
           <Button variant="destructive" onClick={onDelete}>Delete</Button>
         </div>
       </div>
 
       <Card>
-        <CardHeader><CardTitle>PO Information</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>PO Information</CardTitle>
+        </CardHeader>
         <Separator />
         <CardContent className="grid md:grid-cols-2 gap-6">
+          {/* Left */}
           <div className="space-y-2">
             <div className="text-sm text-muted-foreground">PO Number</div>
             <div className="font-medium">{po.po_number}</div>
@@ -112,37 +158,38 @@ export default function PurchaseOrderDetailPage() {
 
             <div className="text-sm text-muted-foreground mt-4">Delivery Date</div>
             <div className="font-medium">{po.delivery_date || '—'}</div>
+
+            {dueDate && (
+              <>
+                <div className="text-sm text-muted-foreground mt-4">Due Date</div>
+                <div className="font-medium">{dueDate}</div>
+              </>
+            )}
           </div>
 
+          {/* Right */}
           <div className="space-y-2">
             <div className="text-sm text-muted-foreground">Vendor</div>
             <div className="font-medium">{po.vendor?.name || '—'}</div>
 
             <div className="text-sm text-muted-foreground mt-4">Tax</div>
             <div className="font-medium">
-              {po.is_tax_included ? 'Included' : 'Excluded'} ({po.tax_percent}%)
+              {po.is_tax_included ? 'Included' : 'Excluded'} ({taxPct}%)
             </div>
 
-            <div className="text-sm text-muted-foreground mt-4">Payment Term</div>
-            <div className="font-medium">
-              {po.effective_term_code
-                ? po.effective_term_code === 'NET'
-                  ? `NET ${po.effective_term_days} hari`
-                  : po.effective_term_code
-                : '—'}
+            <div className="text-sm text-muted-foreground mt-4">Payment Status</div>
+            <div>
+              <PaymentStatusBadge status={paymentStatus} daysOverdue={daysOverdue} />
             </div>
 
-            <div className="text-sm text-muted-foreground mt-4">Due Date (Effective)</div>
-            <div className="font-medium">
-              {due || '—'}
-              {!!due && (
-                <span className={`ml-2 text-xs px-2 py-0.5 rounded
-                  ${dayLeft! < 0 ? 'bg-red-100 text-red-700' : dayLeft! <= 7 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                  {dayLeft! < 0 ? `${Math.abs(dayLeft!)} hari lewat jatuh tempo` :
-                   dayLeft === 0 ? 'Jatuh tempo hari ini' :
-                   `Jatuh tempo ${dayLeft} hari lagi`}
-                </span>
-              )}
+            <div className="text-sm text-muted-foreground mt-4">Payment</div>
+            <div className="text-sm">
+              <div className="flex justify-between w-64 max-w-full">
+                <span>Paid:</span><span className="font-medium">Rp {fmtID.format(paid)}</span>
+              </div>
+              <div className="flex justify-between w-64 max-w-full">
+                <span>Balance:</span><span className="font-semibold">Rp {fmtID.format(balance)}</span>
+              </div>
             </div>
           </div>
 
@@ -156,7 +203,9 @@ export default function PurchaseOrderDetailPage() {
 
         <Separator />
 
-        <CardHeader><CardTitle>Items</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>Items</CardTitle>
+        </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
@@ -169,36 +218,87 @@ export default function PurchaseOrderDetailPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {po.items.map((it) => (
-                <TableRow key={it.id}>
-                  <TableCell>{it.description}</TableCell>
-                  <TableCell className="text-right">{fmtID.format(it.qty)}</TableCell>
-                  <TableCell>{it.unit || '—'}</TableCell>
-                  <TableCell className="text-right">{fmtID.format(it.unit_price)}</TableCell>
-                  <TableCell className="text-right font-medium">{fmtID.format(it.amount)}</TableCell>
-                </TableRow>
-              ))}
+              {items.map((it: any) => {
+                const rowAmt = Number(it.amount ?? it.qty * it.unit_price) || 0;
+                return (
+                  <TableRow key={it.id}>
+                    <TableCell>{it.description}</TableCell>
+                    <TableCell className="text-right">{fmtID.format(it.qty)}</TableCell>
+                    <TableCell>{it.unit || '—'}</TableCell>
+                    <TableCell className="text-right">{fmtID.format(it.unit_price)}</TableCell>
+                    <TableCell className="text-right font-medium">{fmtID.format(rowAmt)}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
 
           <div className="mt-6 flex flex-col items-end gap-1 text-sm">
-            <div className="w-full sm:w-80 flex justify-between"><span>Subtotal</span><span>{fmtID.format(po.subtotal)}</span></div>
+            <div className="w-full sm:w-80 flex justify-between">
+              <span>Subtotal</span>
+              <span>{fmtID.format(subtotal)}</span>
+            </div>
             <div className="w-full sm:w-80 flex justify-between text-muted-foreground">
-              <span>Tax {po.tax_percent}% {po.is_tax_included ? '(included)' : ''}</span>
-              <span>{po.is_tax_included ? '—' : fmtID.format(po.taxAmount)}</span>
+              <span>Tax {taxPct}% {po.is_tax_included ? '(included)' : ''}</span>
+              <span>{po.is_tax_included ? '—' : fmtID.format(taxAmount)}</span>
             </div>
             <Separator className="my-2 w-full sm:w-80" />
             <div className="w-full sm:w-80 flex justify-between font-semibold text-base">
-              <span>Total</span><span>{fmtID.format(po.total)}</span>
+              <span>Total</span>
+              <span>{fmtID.format(total)}</span>
+            </div>
+
+            {/* Payment recap below totals */}
+            <Separator className="my-2 w-full sm:w-80" />
+            <div className="w-full sm:w-80 flex justify-between">
+              <span>Paid</span>
+              <span>{fmtID.format(paid)}</span>
+            </div>
+            <div className="w-full sm:w-80 flex justify-between font-semibold">
+              <span>Balance</span>
+              <span>{fmtID.format(balance)}</span>
             </div>
           </div>
         </CardContent>
 
         <CardFooter className="justify-end gap-2 pb-6">
-          <Button variant="outline" onClick={() => history.back()}>Back</Button>
-          <Button asChild><Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link></Button>
+          <Button variant="outline" onClick={() => router.back()}>Back</Button>
+          <Button asChild>
+            <Link href={`/purchase-orders/${po.id}/edit`}>Edit</Link>
+          </Button>
         </CardFooter>
       </Card>
+
+      {/* Payments list (FE) */}
+      <PaymentsCard
+        key={`${po.id}-${paymentsTick}`}
+        poId={po.id}
+        onAddPayment={() => setPayOpen(true)}
+      />
+
+      {/* Pay dialog */}
+      <PayFromPODialog
+        open={payOpen}
+        onOpenChange={setPayOpen}
+        po={{
+          id: po.id,
+          po_number: po.po_number,
+          vendor: po.vendor ? { id: po.vendor.id, name: po.vendor.name } : null,
+          paid,
+          outstanding: balance,
+          total,
+        }}
+        defaultAmount={balance}
+        onSuccess={async () => {
+          try {
+            const fresh = await getPurchaseOrder(po.id);
+            setPo(fresh);
+            setPaymentsTick(t => t + 1); // refresh riwayat pembayaran
+          } catch (e: any) {
+            toast.error(e?.message || 'Failed to refresh PO');
+          }
+        }}
+      />
     </div>
   );
 }

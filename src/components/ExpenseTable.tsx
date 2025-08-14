@@ -1,41 +1,57 @@
 // src/components/finance/ExpenseTable.tsx
 'use client';
 
+import * as React from 'react';
+import Link from 'next/link';
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { ExpenseListItem } from '@/features/expenses/types';
 import { MoreHorizontal } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
-import Link from 'next/link';
-import * as React from 'react';
+import type { ExpenseListItem } from '@/features/expenses/types';
 
 const fmtID = new Intl.NumberFormat('id-ID');
 
 export type ExpenseTableProps = {
   rows: ExpenseListItem[];
   loading?: boolean;
-  // columns visibility
   show?: Partial<{
     source: boolean; status: boolean; shareholder: boolean;
     category: boolean; subcategory: boolean;
     vendor: boolean; invoice: boolean; note: boolean; period: boolean;
+    po: boolean; // ⬅️ NEW
   }>;
-  // optional actions per row
   actions?: (row: ExpenseListItem) => React.ReactNode;
-  // optional onRowClick
   onRowClick?: (row: ExpenseListItem) => void;
 };
 
 export function ExpenseTable({
-  rows, loading,
-  show = { source: true, status: true, shareholder: true, category: true, subcategory: true, vendor: true, invoice: true, note: false, period: false },
+  rows,
+  loading,
+  show = {
+    source: true, status: true, shareholder: true,
+    category: true, subcategory: true, vendor: true, invoice: true,
+    note: false, period: false, po: true, // ⬅️ default tampilkan PO
+  },
   actions, onRowClick,
 }: ExpenseTableProps) {
 
   const totalDisplayed = rows.reduce((s, r) => s + (r.amount || 0), 0);
+
+  // hitung colSpan label "Total" (semua kolom kecuali Amount & Actions)
+  const totalLabelSpan =
+    1 + // Date
+    (show.period ? 1 : 0) +
+    (show.source ? 1 : 0) +
+    (show.status ? 1 : 0) +
+    (show.shareholder ? 1 : 0) +
+    (show.category ? 1 : 0) +
+    (show.subcategory ? 1 : 0) +
+    (show.vendor ? 1 : 0) +
+    (show.invoice ? 1 : 0) +
+    (show.note ? 1 : 0) +
+    (show.po ? 1 : 0);
 
   return (
     <div className="overflow-x-auto">
@@ -52,10 +68,12 @@ export function ExpenseTable({
             {show.vendor && <TableHead>Vendor</TableHead>}
             {show.invoice && <TableHead>Invoice</TableHead>}
             {show.note && <TableHead>Note</TableHead>}
+            {show.po && <TableHead className="min-w-[120px]">PO</TableHead>}
             <TableHead className="text-right min-w-[140px]">Amount</TableHead>
-            <TableHead className="w-[56px]"></TableHead>
+            <TableHead className="w-[56px]" />
           </TableRow>
         </TableHeader>
+
         <TableBody>
           {loading && Array.from({ length: 6 }).map((_, i) => (
             <TableRow key={`sk-${i}`}>
@@ -69,8 +87,9 @@ export function ExpenseTable({
               {show.vendor && <TableCell><div className="h-4 w-24 bg-muted animate-pulse rounded" /></TableCell>}
               {show.invoice && <TableCell><div className="h-4 w-20 bg-muted animate-pulse rounded" /></TableCell>}
               {show.note && <TableCell><div className="h-4 w-28 bg-muted animate-pulse rounded" /></TableCell>}
+              {show.po && <TableCell><div className="h-4 w-24 bg-muted animate-pulse rounded" /></TableCell>}
               <TableCell className="text-right"><div className="h-4 w-24 bg-muted animate-pulse rounded ml-auto" /></TableCell>
-              <TableCell></TableCell>
+              <TableCell />
             </TableRow>
           ))}
 
@@ -91,6 +110,27 @@ export function ExpenseTable({
                 {show.vendor && <TableCell>{r.vendor_name ?? '—'}</TableCell>}
                 {show.invoice && <TableCell>{r.invoice_no ?? '—'}</TableCell>}
                 {show.note && <TableCell className="max-w-[280px] truncate">{r.note ?? '—'}</TableCell>}
+
+                {/* NEW: PO numbers */}
+                {show.po && (
+                  <TableCell>
+                    {r.po_refs?.length ? (
+                      <div className="flex flex-wrap gap-1">
+                        {r.po_refs.map(po => (
+                          <Link
+                            key={po.id}
+                            href={`/purchase-orders/${po.id}`}
+                            onClick={(e)=>e.stopPropagation()}
+                            className="underline underline-offset-4"
+                          >
+                            {po.po_number}
+                          </Link>
+                        ))}
+                      </div>
+                    ) : '—'}
+                  </TableCell>
+                )}
+
                 <TableCell className="text-right">Rp {fmtID.format(r.amount)}</TableCell>
                 <TableCell className="text-right">
                   <DropdownMenu>
@@ -103,7 +143,6 @@ export function ExpenseTable({
                       {actions ? actions(r) : (
                         <>
                           <DropdownMenuItem asChild><Link href={`/finance/expenses/${r.id}`}>Open</Link></DropdownMenuItem>
-                          {/* Tambah item lain sesuai kebutuhan */}
                         </>
                       )}
                     </DropdownMenuContent>
@@ -115,7 +154,7 @@ export function ExpenseTable({
 
           {!loading && rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={12} className="text-center text-muted-foreground py-10">
+              <TableCell colSpan={totalLabelSpan + 2} className="text-center text-muted-foreground py-10">
                 Tidak ada data
               </TableCell>
             </TableRow>
@@ -123,11 +162,11 @@ export function ExpenseTable({
 
           {!loading && rows.length > 0 && (
             <TableRow className="bg-muted/40">
-              <TableCell colSpan={show.note ? 10 : 9} className="text-right font-semibold">
+              <TableCell colSpan={totalLabelSpan} className="text-right font-semibold">
                 Total (halaman ini)
               </TableCell>
               <TableCell className="text-right font-semibold">Rp {fmtID.format(totalDisplayed)}</TableCell>
-              <TableCell></TableCell>
+              <TableCell />
             </TableRow>
           )}
         </TableBody>

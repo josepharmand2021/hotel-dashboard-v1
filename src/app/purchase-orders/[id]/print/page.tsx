@@ -1,16 +1,17 @@
+// src/app/purchase-orders/[id]/print/page.tsx
 'use client';
 
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { getPurchaseOrder } from '@/features/purchase-orders/api.client';
+import { getPurchaseOrder } from '@/features/purchase-orders/api'; // pastikan fungsi ini bisa dipanggil di client
 
 const fmtID = new Intl.NumberFormat('id-ID');
 
 const COMPANY = {
   name: 'PT Inovasi Akomodasi Kreatif',
   address: 'Jl. Sumatera No. 49, Citarum Bandung Wetan, Kota Bandung',
-  logo: '/logo.png',
+  logo: '/logo.png', // letakkan file di /public/logo.png
 };
 
 export default function PurchaseOrderPrintPage() {

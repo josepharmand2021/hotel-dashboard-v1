@@ -1,97 +1,127 @@
+// src/components/ComboboxPO.tsx
 'use client';
 
 import * as React from 'react';
-import { ChevronsUpDown, Check } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase/client';
-import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { ChevronsUpDown, Check } from 'lucide-react';
+import { cn } from '@/lib/utils'; // kalau nggak ada, ganti dengan join kelas sederhana
+import { getPOFinance } from '@/features/purchase-orders/api.client';
 
-type POOpt = { id: number; po_number: string; vendor_name: string; date?: string | null };
-
-function getVendorName(v: any): string {
-  if (!v) return '';
-  return Array.isArray(v) ? (v[0]?.name ?? '') : (v.name ?? '');
-}
+export type POOpt = {
+  id: number;
+  po_number: string;
+  vendor_id: number;
+  vendor_name: string;
+  total?: number;
+  paid?: number;
+  outstanding?: number;
+};
 
 export default function ComboboxPO({
-  value, onChange, placeholder = 'Pilih PO', className, filterStatus,
+  value,
+  onChange,
+  placeholder = 'Pilih PO...',
 }: {
-  value?: POOpt | null;
-  onChange: (opt: POOpt | null) => void;
+  value: POOpt | null;
+  onChange: (next: POOpt | null) => void;
   placeholder?: string;
-  className?: string;
-  filterStatus?: string[];
 }) {
   const [open, setOpen] = React.useState(false);
-  const [query, setQuery] = React.useState('');
   const [items, setItems] = React.useState<POOpt[]>([]);
   const [loading, setLoading] = React.useState(false);
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        let q = supabase
-          .from('purchase_orders')
-          .select('id, po_number, po_date, vendor_id, vendors(name)')
-          .order('id', { ascending: false })
-          .limit(200);
-        if (filterStatus?.length) q = q.in('status', filterStatus as any);
+  async function fetchList(term?: string) {
+    setLoading(true);
+    try {
+      // Cari dari purchase_orders + vendors (nama vendor)
+      let q = supabase
+        .from('purchase_orders')
+        .select('id, po_number, vendor_id, vendors(name)')
+        .order('po_date', { ascending: false })
+        .limit(10);
 
-        const { data, error } = await q;
-        if (error) throw error;
-
-        const rows: POOpt[] = (data ?? []).map((r: any) => ({
-          id: r.id,
-          po_number: r.po_number ?? String(r.id),
-          vendor_name: getVendorName(r.vendors),
-          date: r.po_date ?? null,
-        }));
-        setItems(rows);
-      } catch (err: any) {
-        toast.error(err.message || 'Gagal memuat PO');
-        setItems([]);
-      } finally {
-        setLoading(false);
+      const t = (term || '').trim();
+      if (t) {
+        q = q.or(`po_number.ilike.%${t}%,vendors.name.ilike.%${t}%`);
       }
-    })();
-  }, [filterStatus?.join(',')]);
 
-  const filtered = items.filter(
-    (x) =>
-      x.po_number.toLowerCase().includes(query.toLowerCase()) ||
-      x.vendor_name.toLowerCase().includes(query.toLowerCase())
-  );
+      const { data, error } = await q;
+      if (error) throw error;
 
-  const label = value ? `${value.po_number} — ${value.vendor_name}` : '';
+      const rows: POOpt[] = (data ?? []).map((r: any) => ({
+        id: Number(r.id),
+        po_number: String(r.po_number || ''),
+        vendor_id: Number(r.vendor_id || 0),
+        vendor_name: String(r.vendors?.name || '—'),
+      }));
+
+      setItems(rows);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  React.useEffect(() => {
+    if (open && items.length === 0) fetchList();
+  }, [open]); // fetch pertama kali saat dibuka
+
+  async function selectPO(it: POOpt) {
+    // Ambil info finance (total/paid/outstanding) setelah pilih
+    try {
+      const f = await getPOFinance(it.id); // { total, paid, outstanding }
+      onChange({
+        ...it,
+        total: Number(f?.total || 0),
+        paid: Number(f?.paid || 0),
+        outstanding: Number(f?.outstanding || 0),
+      });
+    } catch {
+      onChange(it); // fallback kalau view finance belum siap
+    } finally {
+      setOpen(false);
+    }
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button type="button" variant="outline" role="combobox" aria-expanded={open} className={cn('w-full justify-between', className)}>
-          {label || placeholder}
-          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        <Button variant="outline" role="combobox" className="w-full justify-between">
+          {value ? `${value.po_number} — ${value.vendor_name}` : (placeholder || 'Pilih PO...')}
+          <ChevronsUpDown className="ml-2 h-4 w-4 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="p-0 w-[var(--radix-popover-trigger-width)]">
-        <Command shouldFilter={false}>
-          <CommandInput placeholder="Cari PO / Vendor…" value={query} onValueChange={setQuery} />
+      <PopoverContent className="w-[520px] p-0 z-50" align="start">
+        <Command shouldFilter={false} onValueChange={() => {}}>
+          <CommandInput
+            placeholder="Cari PO / vendor..."
+            onValueChange={(v) => fetchList(v)}
+          />
           <CommandList>
-            <CommandEmpty>{loading ? 'Memuat…' : 'Tidak ditemukan'}</CommandEmpty>
-            <CommandGroup heading="Purchase Orders">
-              {filtered.map((po) => (
-                <CommandItem key={po.id} value={String(po.id)} onSelect={() => { onChange(po); setOpen(false); }}>
-                  <Check className={cn('mr-2 h-4 w-4', po.id === value?.id ? 'opacity-100' : 'opacity-0')} />
-                  <div className="flex flex-col">
-                    <span className="font-medium">{po.po_number} — {po.vendor_name}</span>
-                    {po.date ? <span className="text-xs text-muted-foreground">{po.date}</span> : null}
-                  </div>
-                </CommandItem>
-              ))}
-            </CommandGroup>
+            {loading && <div className="px-3 py-2 text-sm text-muted-foreground">Memuat…</div>}
+            {!loading && (
+              <>
+                <CommandEmpty>Tidak ada data</CommandEmpty>
+                <CommandGroup heading="Purchase Orders">
+                  {items.map((it) => (
+                    <CommandItem
+                      key={it.id}
+                      value={`${it.po_number} ${it.vendor_name}`}
+                      onSelect={() => selectPO(it)}
+                      className="flex items-center gap-2"
+                    >
+                      <Check className={cn('h-4 w-4', value?.id === it.id ? 'opacity-100' : 'opacity-0')} />
+                      <div className="flex flex-col">
+                        <div className="font-medium">{it.po_number}</div>
+                        <div className="text-xs text-muted-foreground">{it.vendor_name}</div>
+                      </div>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
           </CommandList>
         </Command>
       </PopoverContent>

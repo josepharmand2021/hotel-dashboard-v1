@@ -1,8 +1,15 @@
+// src/app/finance/petty-cash/[id]/page.tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { listLedger, addTopup, addAdjust, addSettlement } from '@/features/petty/api';
+import {
+  listLedger,
+  addTopup,
+  addAdjust,
+  addSettlement,
+} from '@/features/petty/api';
+
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,42 +19,40 @@ import { supabase } from '@/lib/supabase/client';
 
 const fmt = new Intl.NumberFormat('id-ID');
 
-// TODO: isi dengan ID subkategori "Transfer Kas Kecil"
-const TRANSFER_SUBCAT_ID = 9999;
-
 type Holder = { id: number; name: string };
 
 export default function PettyCashDetailPage() {
   const { id } = useParams<{ id: string }>();
   const boxId = Number(id);
 
-  // filters
-  const [from, setFrom] = useState<string>('');   // YYYY-MM-DD
-  const [to, setTo] = useState<string>('');       // YYYY-MM-DD
+  // Filters & data
+  const [from, setFrom] = useState<string>('');  // YYYY-MM-DD
+  const [to, setTo] = useState<string>('');      // YYYY-MM-DD
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // quick actions - TOPUP
+  // Top Up state
+  const [source, setSource] = useState<'PT' | 'RAB'>('RAB');
+  const [holders, setHolders] = useState<Holder[]>([]);
+  const [shareholderId, setShareholderId] = useState<number | undefined>();
   const [topupDate, setTopupDate] = useState<string>('');
   const [topupAmt, setTopupAmt] = useState<string>('');
   const [topupRef, setTopupRef] = useState<string>('');
   const [topupNote, setTopupNote] = useState<string>('');
-  const [source, setSource] = useState<'PT'|'RAB'>('RAB');
-  const [holders, setHolders] = useState<Holder[]>([]);
-  const [shareholderId, setShareholderId] = useState<number | undefined>();
   const [savingTopup, setSavingTopup] = useState(false);
 
-  // settlement
+  // Settlement state
   const [settleDate, setSettleDate] = useState<string>('');
   const [settleAmt, setSettleAmt] = useState<string>('');
   const [savingSettle, setSavingSettle] = useState(false);
 
-  // adjust
+  // Adjustment state
   const [adjDate, setAdjDate] = useState<string>('');
   const [adjAmt, setAdjAmt] = useState<string>('');
-  const [adjDir, setAdjDir] = useState<'in'|'out'>('in');
+  const [adjDir, setAdjDir] = useState<'in' | 'out'>('in');
   const [savingAdj, setSavingAdj] = useState(false);
 
+  // Load ledger
   async function load() {
     setLoading(true);
     try {
@@ -59,20 +64,32 @@ export default function PettyCashDetailPage() {
       setLoading(false);
     }
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [boxId, from, to]);
-
-  // load shareholders untuk topup via RAB
   useEffect(() => {
-    supabase.from('shareholders').select('id,name').order('name', { ascending: true })
-      .then(({ data, error }) => { if (!error) setHolders(data || []); });
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boxId, from, to]);
+
+  // Load shareholders for RAB
+  useEffect(() => {
+    supabase
+      .from('shareholders')
+      .select('id,name')
+      .order('name', { ascending: true })
+      .then(({ data, error }) => {
+        if (!error) setHolders(data || []);
+      });
   }, []);
 
-  const balance = useMemo(() => rows.length ? rows[rows.length - 1].running_balance : 0, [rows]);
+  const balance = useMemo(
+    () => (rows.length ? Number(rows[rows.length - 1].running_balance) : 0),
+    [rows]
+  );
 
+  // Actions
   async function doTopup() {
     const amt = Number(topupAmt);
     if (!topupDate || !amt || amt <= 0) return toast.error('Isi tanggal & amount');
-    if (!TRANSFER_SUBCAT_ID) return toast.error('TRANSFER_SUBCAT_ID belum diset');
+    if (source === 'RAB' && !shareholderId) return toast.error('Pilih shareholder untuk top-up RAB');
 
     setSavingTopup(true);
     try {
@@ -81,14 +98,18 @@ export default function PettyCashDetailPage() {
         cashbox_id: boxId,
         txn_date: topupDate,
         amount: amt,
-        transfer_subcategory_id: TRANSFER_SUBCAT_ID,
         shareholder_id: source === 'RAB' ? shareholderId! : undefined,
         note: topupNote || null,
         ref_no: topupRef || null,
       });
-      setTopupAmt(''); setTopupDate(''); setTopupNote(''); setTopupRef('');
+
+      // clear form
+      setTopupAmt('');
+      setTopupDate('');
+      setTopupRef('');
+      setTopupNote('');
       toast.success('Top Up berhasil');
-      load();
+      await load();
     } catch (e: any) {
       toast.error(e.message || 'Gagal Top Up');
     } finally {
@@ -102,9 +123,10 @@ export default function PettyCashDetailPage() {
     setSavingSettle(true);
     try {
       await addSettlement({ cashbox_id: boxId, txn_date: settleDate, amount: amt });
-      setSettleAmt(''); setSettleDate('');
+      setSettleAmt('');
+      setSettleDate('');
       toast.success('Settlement ditambahkan');
-      load();
+      await load();
     } catch (e: any) {
       toast.error(e.message || 'Gagal settlement');
     } finally {
@@ -118,9 +140,10 @@ export default function PettyCashDetailPage() {
     setSavingAdj(true);
     try {
       await addAdjust({ cashbox_id: boxId, txn_date: adjDate, amount: amt, direction: adjDir });
-      setAdjAmt(''); setAdjDate('');
+      setAdjAmt('');
+      setAdjDate('');
       toast.success('Adjustment ditambahkan');
-      load();
+      await load();
     } catch (e: any) {
       toast.error(e.message || 'Gagal adjustment');
     } finally {
@@ -137,64 +160,134 @@ export default function PettyCashDetailPage() {
 
       {/* Quick Actions */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Top Up */}
         <Card>
-          <CardHeader><CardTitle>Top Up</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Top Up</CardTitle>
+          </CardHeader>
           <CardContent className="space-y-3">
-            {/* Source */}
             <div className="flex items-center gap-3 text-sm">
               <span className="font-medium">Sumber:</span>
               <label className="flex items-center gap-1">
-                <input type="radio" name="src" checked={source==='PT'} onChange={()=>setSource('PT')} />
+                <input
+                  type="radio"
+                  name="src"
+                  checked={source === 'PT'}
+                  onChange={() => setSource('PT')}
+                />
                 PT
               </label>
               <label className="flex items-center gap-1">
-                <input type="radio" name="src" checked={source==='RAB'} onChange={()=>setSource('RAB')} />
+                <input
+                  type="radio"
+                  name="src"
+                  checked={source === 'RAB'}
+                  onChange={() => setSource('RAB')}
+                />
                 RAB
               </label>
             </div>
 
-            {/* Shareholder bila RAB */}
             {source === 'RAB' && (
               <select
                 className="h-9 rounded-md border px-3 text-sm"
                 value={shareholderId ?? ''}
-                onChange={(e)=>setShareholderId(e.target.value ? Number(e.target.value) : undefined)}
+                onChange={(e) =>
+                  setShareholderId(e.target.value ? Number(e.target.value) : undefined)
+                }
               >
                 <option value="">Pilih shareholder…</option>
-                {holders.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+                {holders.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name}
+                  </option>
+                ))}
               </select>
             )}
 
-            <Input type="date" value={topupDate} onChange={e=>setTopupDate(e.target.value)} placeholder="Tanggal" />
-            <Input inputMode="numeric" value={topupAmt} onChange={e=>setTopupAmt(e.target.value)} placeholder="Amount (IDR)" />
-            <Input value={topupRef} onChange={e=>setTopupRef(e.target.value)} placeholder="Ref No (opsional)" />
-            <Input value={topupNote} onChange={e=>setTopupNote(e.target.value)} placeholder="Catatan (opsional)" />
-            <Button onClick={doTopup} disabled={savingTopup || (source==='RAB' && !shareholderId)}>
+            <Input
+              type="date"
+              value={topupDate}
+              onChange={(e) => setTopupDate(e.target.value)}
+              placeholder="Tanggal"
+            />
+            <Input
+              inputMode="numeric"
+              value={topupAmt}
+              onChange={(e) => setTopupAmt(e.target.value)}
+              placeholder="Amount (IDR)"
+            />
+            <Input
+              value={topupRef}
+              onChange={(e) => setTopupRef(e.target.value)}
+              placeholder="Ref No (opsional)"
+            />
+            <Input
+              value={topupNote}
+              onChange={(e) => setTopupNote(e.target.value)}
+              placeholder="Catatan (opsional)"
+            />
+            <Button
+              onClick={doTopup}
+              disabled={savingTopup || (source === 'RAB' && !shareholderId)}
+            >
               {savingTopup ? 'Menyimpan…' : 'Add Top Up'}
             </Button>
           </CardContent>
         </Card>
 
+        {/* Settlement */}
         <Card>
-          <CardHeader><CardTitle>Settlement (Setor kembali)</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Settlement (Setor kembali)</CardTitle>
+          </CardHeader>
           <CardContent className="space-y-3">
-            <Input type="date" value={settleDate} onChange={e=>setSettleDate(e.target.value)} />
-            <Input inputMode="numeric" value={settleAmt} onChange={e=>setSettleAmt(e.target.value)} placeholder="Amount (IDR)" />
+            <Input
+              type="date"
+              value={settleDate}
+              onChange={(e) => setSettleDate(e.target.value)}
+            />
+            <Input
+              inputMode="numeric"
+              value={settleAmt}
+              onChange={(e) => setSettleAmt(e.target.value)}
+              placeholder="Amount (IDR)"
+            />
             <Button variant="secondary" onClick={doSettle} disabled={savingSettle}>
               {savingSettle ? 'Menyimpan…' : 'Add Settlement'}
             </Button>
           </CardContent>
         </Card>
 
+        {/* Adjustment */}
         <Card>
-          <CardHeader><CardTitle>Adjustment</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Adjustment</CardTitle>
+          </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex gap-2">
-              <Button type="button" variant={adjDir==='in'?'default':'outline'} onClick={()=>setAdjDir('in')}>Adjust In</Button>
-              <Button type="button" variant={adjDir==='out'?'default':'outline'} onClick={()=>setAdjDir('out')}>Adjust Out</Button>
+              <Button
+                type="button"
+                variant={adjDir === 'in' ? 'default' : 'outline'}
+                onClick={() => setAdjDir('in')}
+              >
+                Adjust In
+              </Button>
+              <Button
+                type="button"
+                variant={adjDir === 'out' ? 'default' : 'outline'}
+                onClick={() => setAdjDir('out')}
+              >
+                Adjust Out
+              </Button>
             </div>
-            <Input type="date" value={adjDate} onChange={e=>setAdjDate(e.target.value)} />
-            <Input inputMode="numeric" value={adjAmt} onChange={e=>setAdjAmt(e.target.value)} placeholder="Amount (IDR)" />
+            <Input type="date" value={adjDate} onChange={(e) => setAdjDate(e.target.value)} />
+            <Input
+              inputMode="numeric"
+              value={adjAmt}
+              onChange={(e) => setAdjAmt(e.target.value)}
+              placeholder="Amount (IDR)"
+            />
             <Button variant="outline" onClick={doAdjust} disabled={savingAdj}>
               {savingAdj ? 'Menyimpan…' : 'Add Adjustment'}
             </Button>
@@ -204,18 +297,38 @@ export default function PettyCashDetailPage() {
 
       {/* Ledger */}
       <Card>
-        <CardHeader><CardTitle>Ledger</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>Ledger</CardTitle>
+        </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2 items-end">
             <div>
               <div className="text-xs text-muted-foreground">From</div>
-              <Input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="w-[170px]" />
+              <Input
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="w-[170px]"
+              />
             </div>
             <div>
               <div className="text-xs text-muted-foreground">To</div>
-              <Input type="date" value={to} onChange={e=>setTo(e.target.value)} className="w-[170px]" />
+              <Input
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="w-[170px]"
+              />
             </div>
-            <Button variant="outline" onClick={()=>{ setFrom(''); setTo(''); }}>Reset</Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setFrom('');
+                setTo('');
+              }}
+            >
+              Reset
+            </Button>
           </div>
 
           <div className="overflow-x-auto">
@@ -232,21 +345,33 @@ export default function PettyCashDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((r,i)=>(
+                {rows.map((r, i) => (
                   <TableRow key={i}>
                     <TableCell>{r.event_date}</TableCell>
                     <TableCell className="uppercase">{r.event_type}</TableCell>
-                    <TableCell>{r.ref_no || (r.shareholder_name ? r.shareholder_name : '—')}</TableCell>
-                    <TableCell className="max-w-[360px] truncate" title={r.note||''}>{r.note || '—'}</TableCell>
-                    <TableCell className="text-right">{r.signed_amount>0 ? `Rp ${fmt.format(r.amount)}` : '—'}</TableCell>
-                    <TableCell className="text-right">{r.signed_amount<0 ? `Rp ${fmt.format(r.amount)}` : '—'}</TableCell>
-                    <TableCell className={`text-right ${r.running_balance<0?'text-red-600':''}`}>Rp {fmt.format(r.running_balance)}</TableCell>
+                    <TableCell>{r.ref_no || r.shareholder_name || '—'}</TableCell>
+                    <TableCell className="max-w-[360px] truncate" title={r.note || ''}>
+                      {r.note || '—'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {r.signed_amount > 0 ? `Rp ${fmt.format(r.amount)}` : '—'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {r.signed_amount < 0 ? `Rp ${fmt.format(r.amount)}` : '—'}
+                    </TableCell>
+                    <TableCell
+                      className={`text-right ${Number(r.running_balance) < 0 ? 'text-red-600' : ''}`}
+                    >
+                      Rp {fmt.format(Number(r.running_balance) || 0)}
+                    </TableCell>
                   </TableRow>
                 ))}
-                {rows.length===0 && (
-                  <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-10">
-                    {loading?'Memuat…':'Tidak ada data'}
-                  </TableCell></TableRow>
+                {rows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
+                      {loading ? 'Memuat…' : 'Tidak ada data'}
+                    </TableCell>
+                  </TableRow>
                 )}
               </TableBody>
             </Table>

@@ -2,20 +2,24 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { toast } from 'sonner';
+import { Pencil, Trash2 } from 'lucide-react';
+
+import Breadcrumbs from '@/components/layout/Breadcrumbs';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
-import Breadcrumbs from '@/components/layout/Breadcrumbs';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+
 import {
   listPurchaseOrders,
   updatePurchaseOrderStatus,
   deletePurchaseOrder,
 } from '@/features/purchase-orders/api.client';
-import { Pencil, Trash2 } from 'lucide-react';
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select';
+
+import PaymentStatusBadge from '@/features/purchase-orders/PaymentStatusBadge';
 
 type Row = {
   id: number;
@@ -23,13 +27,20 @@ type Row = {
   vendor_name: string;
   po_date: string | null;
   delivery_date: string | null;
-  due_date: string | null;         // from view (effective due)
-  total: number | null;            // total_amount from view
+  due_date: string | null;            // effective due date (neutral display)
+  total: number | null;               // total_amount (view)
   is_tax_included: boolean;
   tax_percent: number | null;
   status: 'draft' | 'sent' | 'delivered' | 'cancelled' | string;
   term_code?: 'CBD'|'COD'|'NET'|null;
   term_days?: number | null;
+
+  // merged finance
+  amount_paid?: number;               // paid
+  balance_due?: number;               // outstanding
+  payment_status?: 'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
+  is_overdue?: boolean;               // derived on client for legacy, optional
+  days_overdue?: number;
 };
 
 const fmtID = new Intl.NumberFormat('id-ID');
@@ -51,6 +62,7 @@ function StatusSelect({
 }: { id: number; value: Row['status']; onChanged?: (next: Row['status']) => void }) {
   const [current, setCurrent] = useState<Row['status']>(value);
   const [saving, setSaving] = useState(false);
+
   const handleChange = async (next: Row['status']) => {
     if (next === current) return;
     const prev = current;
@@ -67,6 +79,7 @@ function StatusSelect({
       setSaving(false);
     }
   };
+
   return (
     <Select value={String(current)} onValueChange={(v) => handleChange(v as Row['status'])} disabled={saving}>
       <SelectTrigger className="h-8 w-28 whitespace-nowrap shrink-0"><SelectValue /></SelectTrigger>
@@ -77,20 +90,6 @@ function StatusSelect({
       </SelectContent>
     </Select>
   );
-}
-
-function duePill(due?: string | null) {
-  if (!due) return '—';
-  const today = new Date(); today.setHours(0,0,0,0);
-  const d = new Date(due); d.setHours(0,0,0,0);
-  const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
-  const cls = diff < 0 ? 'bg-red-100 text-red-700'
-    : diff <= 7 ? 'bg-amber-100 text-amber-700'
-    : 'bg-emerald-100 text-emerald-700';
-  const label = diff < 0 ? `${Math.abs(diff)}d overdue`
-    : diff === 0 ? 'Due today'
-    : `Due in ${diff}d`;
-  return <span className={`px-2 py-0.5 rounded text-xs ${cls}`}>{new Date(due).toISOString().slice(0,10)} • {label}</span>;
 }
 
 export default function PurchaseOrdersListPage() {
@@ -127,12 +126,14 @@ export default function PurchaseOrdersListPage() {
   };
 
   const header = useMemo(() => (
-    <div className="p-3 grid grid-cols-[1.2fr_1.6fr_1.2fr_1.8fr_1.2fr_7rem_6rem] gap-2 font-medium text-sm bg-muted/50">
+    //     PO#    Vendor    PO Date    Due Date   Total      Payment                 PO Status   Actions
+    <div className="p-3 grid grid-cols-[1.1fr_1.5fr_1fr_1.3fr_1.1fr_1.9fr_7rem_6rem] gap-2 font-medium text-sm bg-muted/50">
       <div>PO Number</div>
       <div>Vendor</div>
       <div>PO Date</div>
       <div>Due Date</div>
       <div>Total</div>
+      <div>Payment</div>
       <div>Status</div>
       <div className="text-right">Actions</div>
     </div>
@@ -167,32 +168,56 @@ export default function PurchaseOrdersListPage() {
 
       {/* List */}
       <div className="border rounded-xl overflow-x-auto">
-        <div className="divide-y min-w-[980px]">
+        <div className="divide-y min-w-[1100px]">
           {header}
 
           {rows.map((po) => {
             const totalAmount = Number(po.total ?? 0);
             const taxPercent = po.tax_percent ?? 11;
             const totalDisplay = po.is_tax_included
-              ? `${fmtID.format(totalAmount)} (Tax ${taxPercent}%)`
-              : fmtID.format(totalAmount);
+              ? `Rp ${fmtID.format(totalAmount)} (Tax ${taxPercent}%)`
+              : `Rp ${fmtID.format(totalAmount)}`;
+
+            const paid = Number(po.amount_paid ?? 0);
+            const balance = Number(po.balance_due ?? Math.max(totalAmount - paid, 0));
 
             return (
               <div
                 key={po.id}
-                className="p-3 grid grid-cols-[1.2fr_1.6fr_1.2fr_1.8fr_1.2fr_7rem_6rem] gap-2 items-center hover:bg-muted/30 transition-colors"
+                className="p-3 grid grid-cols-[1.1fr_1.5fr_1fr_1.3fr_1.1fr_1.9fr_7rem_6rem] gap-2 items-center hover:bg-muted/30 transition-colors"
               >
+                {/* PO number */}
                 <div className="font-medium">
                   <Link href={`/purchase-orders/${po.id}`} className="underline underline-offset-4">
                     {po.po_number}
                   </Link>
                 </div>
 
+                {/* Vendor */}
                 <div>{po.vendor_name}</div>
+
+                {/* PO Date */}
                 <div>{po.po_date || '—'}</div>
-                <div>{duePill(po.due_date)}</div>
+
+                {/* Due Date (neutral, no chip) */}
+                <div className="text-xs text-muted-foreground">{po.due_date || '—'}</div>
+
+                {/* Total */}
                 <div>{totalDisplay}</div>
 
+                {/* Payment */}
+                <div className="flex items-center gap-2">
+                  <div className="text-sm">
+                    <div className="leading-tight">Paid: <b>Rp {fmtID.format(paid)}</b></div>
+                    <div className="leading-tight">Balance: <b>Rp {fmtID.format(balance)}</b></div>
+                  </div>
+                  <PaymentStatusBadge
+                    status={(po.payment_status ?? 'UNPAID') as any}
+                    daysOverdue={po.days_overdue ?? 0}
+                  />
+                </div>
+
+                {/* PO lifecycle status */}
                 <div className="flex justify-end">
                   <StatusSelect
                     id={po.id}
@@ -229,8 +254,14 @@ export default function PurchaseOrdersListPage() {
       {/* Pagination */}
       <div className="flex items-center justify-end gap-2">
         <Button variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</Button>
-        <div className="text-sm">Page {page} / {Math.max(1, Math.ceil(total / pageSize))}</div>
-        <Button variant="outline" disabled={page >= Math.ceil(total / pageSize)} onClick={() => setPage((p) => p + 1)}>Next</Button>
+        <div className="text-sm">Page {page} / {pages}</div>
+        <Button
+          variant="outline"
+          disabled={page >= pages}
+          onClick={() => setPage((p) => p + 1)}
+        >
+          Next
+        </Button>
       </div>
     </div>
   );

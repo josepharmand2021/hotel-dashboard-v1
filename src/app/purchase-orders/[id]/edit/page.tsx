@@ -15,8 +15,8 @@ import { Separator } from '@/components/ui/separator';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Breadcrumbs from '@/components/layout/Breadcrumbs';
 
-import { getPurchaseOrder, updatePurchaseOrder } from '@/features/purchase-orders/api.client';
 import { listVendors } from '@/features/vendors/api';
+import { getPurchaseOrder, updatePurchaseOrder } from '@/features/purchase-orders/api';
 
 /* =========================
    Helpers
@@ -37,11 +37,10 @@ function computeDueDate(po_date?: string|null, delivery_date?: string|null, term
   const d = delivery_date ? new Date(delivery_date) : null;
   const code = (term_code || 'NET').toUpperCase();
   const days = term_days ?? 0;
-  const base = (code === 'COD') ? (d || p) : p;
+  const base = (code === 'COD') ? (d || p) : p; // COD pakai delivery/PO, CBD/NET pakai PO
   if (!base) return '';
   const dt = new Date(base);
   if (code === 'NET') dt.setDate(dt.getDate() + days);
-  // CBD: pakai PO date, COD: pakai delivery/PO, NET: +days dari PO
   return dt.toISOString().slice(0,10);
 }
 
@@ -49,7 +48,7 @@ function computeDueDate(po_date?: string|null, delivery_date?: string|null, term
    Schema
 ========================= */
 const itemSchema = z.object({
-  id: z.number().optional(),                 // id item tetap di state (tidak perlu input hidden)
+  id: z.number().optional(),
   description: z.string().min(1, 'Required'),
   qty: z.coerce.number().positive('Qty must be > 0'),
   unit: z.string().optional().or(z.literal('')),
@@ -74,6 +73,11 @@ const schema = z.object({
 });
 type FormVals = z.infer<typeof schema>;
 
+// tipe longgar agar boleh akses vendor_id bila API mengembalikan kolom itu
+type PurchaseOrderForEdit = Awaited<ReturnType<typeof getPurchaseOrder>> & {
+  vendor_id?: number | null;
+};
+
 export default function EditPOPage() {
   const router = useRouter();
   const { id: idParam } = useParams<{ id: string }>();
@@ -94,7 +98,7 @@ export default function EditPOPage() {
       tax_percent: 11,
       note: '',
 
-      term_code: '',      // kosong = ikut vendor
+      term_code: '',
       term_days: undefined,
       auto_due: true,
       due_date_override: '',
@@ -123,26 +127,29 @@ export default function EditPOPage() {
     (async () => {
       try {
         setLoading(true);
-        const po = await getPurchaseOrder(id);
 
-        // derive defaults for term & due date
-        const effectiveVendorCode = po.term_code ?? po.vendor?.payment_type ?? 'NET';
-        const effectiveVendorDays = (po.term_code ?? po.vendor?.payment_type) === 'NET'
-          ? (po.term_days ?? po.vendor?.term_days ?? 0)
+        const po = (await getPurchaseOrder(id)) as PurchaseOrderForEdit;
+
+        const effectiveVendorCode = (po.term_code ?? po.vendor?.payment_type ?? 'NET') as 'CBD'|'COD'|'NET';
+        const effectiveVendorDays = effectiveVendorCode === 'NET'
+          ? Number(po.term_days ?? po.vendor?.term_days ?? 0)
           : 0;
 
-        const autoDue = !po.due_date_override; // kalau override null => auto
+        const autoDue = !po.due_date_override;
+
+        const vendorId = (po.vendor?.id ?? po.vendor_id ?? undefined) as number | undefined;
+
         form.reset({
           po_number: po.po_number ?? '',
-          vendor_id: po.vendor?.id ?? po.vendor_id,
+          vendor_id: (vendorId ?? (undefined as unknown as number)),
           po_date: po.po_date ?? '',
           delivery_date: po.delivery_date ?? '',
           is_tax_included: !!po.is_tax_included,
           tax_percent: Number(po.tax_percent ?? 11),
           note: po.note ?? '',
 
-          term_code: effectiveVendorCode as any,
-          term_days: effectiveVendorCode === 'NET' ? Number(effectiveVendorDays) : undefined,
+          term_code: effectiveVendorCode,
+          term_days: effectiveVendorCode === 'NET' ? effectiveVendorDays : undefined,
           auto_due: autoDue,
           due_date_override: po.due_date_override ?? '',
 
@@ -154,7 +161,10 @@ export default function EditPOPage() {
             unit_price: Number(it.unit_price ?? 0),
           })),
         });
-        if (!po.items || po.items.length === 0) replace([{ description: '', qty: 1, unit: 'pcs', unit_price: 0 }]);
+
+        if (!po.items || po.items.length === 0) {
+          replace([{ description: '', qty: 1, unit: 'pcs', unit_price: 0 }]);
+        }
       } catch (e: any) {
         toast.error(e.message || 'Failed to load PO');
       } finally {
@@ -171,7 +181,7 @@ export default function EditPOPage() {
 
   const poDate = useWatch({ control: form.control, name: 'po_date' });
   const delivDate = useWatch({ control: form.control, name: 'delivery_date' });
-  const termCode = useWatch({ control: form.control, name: 'term_code' }) || 'NET';
+  const termCode = (useWatch({ control: form.control, name: 'term_code' }) || 'NET').toUpperCase();
   const termDays = useWatch({ control: form.control, name: 'term_days' }) ?? 0;
   const autoDue = useWatch({ control: form.control, name: 'auto_due' });
   const dueOverride = useWatch({ control: form.control, name: 'due_date_override' });
@@ -182,7 +192,7 @@ export default function EditPOPage() {
   );
   const total = incl ? subtotal : subtotal * (1 + asNum(taxPct) / 100);
 
-  const dueFormula = computeDueDate(poDate, delivDate, termCode || 'NET', termCode === 'NET' ? termDays : 0);
+  const dueFormula = computeDueDate(poDate, delivDate, termCode, termCode === 'NET' ? termDays : 0);
   const dueEffective = autoDue ? dueFormula : (dueOverride || '');
 
   async function onSubmit(values: FormVals) {
@@ -297,7 +307,7 @@ export default function EditPOPage() {
                 type="number"
                 min={0}
                 {...form.register('term_days', { valueAsNumber: true })}
-                disabled={(termCode || '').toUpperCase() !== 'NET'}
+                disabled={termCode !== 'NET'}
               />
             </div>
 
@@ -372,7 +382,6 @@ export default function EditPOPage() {
                       <TableCell className="text-right">
                         <Button type="button" variant="ghost" onClick={() => remove(idx)}>Remove</Button>
                       </TableCell>
-                      {/* ⛔️ Tidak ada input hidden id di dalam <tr> untuk hindari hydration error */}
                     </TableRow>
                   );
                 })}
@@ -400,7 +409,7 @@ export default function EditPOPage() {
 
           <Separator />
           <CardFooter className="justify-end gap-2 mt-4 pb-6">
-            <Button type="button" variant="outline" onClick={() => history.back()}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={() => router.back()}>Cancel</Button>
             <Button type="submit" disabled={form.formState.isSubmitting}>
               {form.formState.isSubmitting ? 'Saving…' : 'Save Changes'}
             </Button>

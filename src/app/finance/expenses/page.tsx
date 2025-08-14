@@ -210,7 +210,7 @@ export default function ExpensesListPage() {
           <ExpenseTable
             rows={rows}
             loading={loading}
-            show={{ source: true, status: true, shareholder: true, category: true, subcategory: true, vendor: true, invoice: true, note: false, period: false }}
+            show={{ source: true, status: true, shareholder: true, category: true, subcategory: true, vendor: true, invoice: true, note: false, period: false, po: true }}
             onRowClick={(r)=> router.push(`/finance/expenses/${r.id}`)}
           />
 
