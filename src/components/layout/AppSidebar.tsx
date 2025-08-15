@@ -69,7 +69,7 @@ const NAV: NavGroup[] = [
   },
   {
     key: 'reports',
-    label: 'Reports',
+    label: 'Budgets',
     icon: BarChart3,
     items: [
       { label: 'Budgets', href: '/reports/budgets' },

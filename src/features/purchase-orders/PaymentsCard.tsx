@@ -109,10 +109,6 @@ export default function PaymentsCard({
           </>
         )}
       </CardContent>
-
-      <CardFooter className="justify-end">
-        {onAddPayment && <Button onClick={onAddPayment}>Add Payment</Button>}
-      </CardFooter>
     </Card>
   );
 }

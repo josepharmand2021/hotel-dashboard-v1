@@ -15,14 +15,16 @@ export type BVRow = {
   subcategories?: { name: string } | null;
 };
 
+
 export async function getBudgetVsRealisation(args: {
   month?: string;               // 'YYYY-MM'
   category_id?: number;
   subcategory_id?: number;
 }) {
+  // 1) ambil rows dari view TANPA nested join
   let q = supabase
     .from('v_budget_vs_realisation_monthly')
-    .select('*, categories:categories(name), subcategories:subcategories(name)')
+    .select('*')
     .order('category_id', { ascending: true })
     .order('subcategory_id', { ascending: true });
 
@@ -34,44 +36,29 @@ export async function getBudgetVsRealisation(args: {
 
   const { data, error } = await q;
   if (error) throw error;
-  return (data || []) as BVRow[];
-}
+  const rows = (data || []) as Omit<BVRow, 'categories'|'subcategories'>[];
 
-// ---------- Drilldown: daftar expenses pembentuk angka ----------
-export async function listExpensesByMonthCategory(args: {
-  month: string;                 // 'YYYY-MM'
-  category_id: number;
-  subcategory_id: number;
-}) {
-  const y = Number(args.month.slice(0, 4));
-  const m = Number(args.month.slice(5));
-  const from = `${y}-${String(m).padStart(2,'0')}-01`;
-  const nextY = m === 12 ? y + 1 : y;
-  const nextM = m === 12 ? 1 : m + 1;
-  const to = `${nextY}-${String(nextM).padStart(2,'0')}-01`;
+  // 2) ambil kamus kategori & subkategori
+  const [{ data: cats }, { data: subs }] = await Promise.all([
+    supabase.from('categories').select('id, name'),
+    supabase.from('subcategories').select('id, name, category_id'),
+  ]);
 
-  const { data, error } = await supabase
-    .from('expenses')
-    .select(`
-      id, expense_date, amount, invoice_no, note,
-      shareholders:shareholders(name),
-      vendors:vendors(name)
-    `)
-    .eq('status', 'posted')
-    .eq('category_id', args.category_id)
-    .eq('subcategory_id', args.subcategory_id)
-    .gte('expense_date', from)
-    .lt('expense_date', to)
-    .order('expense_date', { ascending: true });
+  const catMap = new Map<number, string>(
+    (cats ?? []).map((c: any) => [Number(c.id), String(c.name ?? '')]),
+  );
+  const subMap = new Map<number, string>(
+    (subs ?? []).map((s: any) => [Number(s.id), String(s.name ?? '')]),
+  );
 
-  if (error) throw error;
-  return (data || []) as Array<{
-    id: number;
-    expense_date: string;
-    amount: number;
-    invoice_no: string | null;
-    note: string | null;
-    shareholders: { name: string } | null;
-    vendors: { name: string } | null;
-  }>;
+  // 3) tempelkan nama ke setiap row
+  return rows.map(r => ({
+    ...r,
+    categories: r.category_id
+      ? { name: catMap.get(Number(r.category_id)) ?? '' }
+      : null,
+    subcategories: r.subcategory_id
+      ? { name: subMap.get(Number(r.subcategory_id)) ?? '' }
+      : null,
+  })) as BVRow[];
 }
