@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { listVendors, deleteVendor } from '@/features/vendors/api';
 import { toast } from 'sonner';
 import Breadcrumbs from '@/components/layout/Breadcrumbs';
+import { RoleGate } from '@/lib/supabase/acl'; // ⬅️ tambah ini
 
 import {
   AlertDialog,
@@ -48,6 +49,7 @@ export default function VendorsListPage() {
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, page]);
 
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -58,6 +60,7 @@ export default function VendorsListPage() {
       toast.success('Vendor deleted');
       load();
     } catch (e: any) {
+      // viewer akan dapat error policy dari server (RLS) -> tampilkan
       toast.error(e.message || 'Delete failed');
     }
   };
@@ -80,9 +83,13 @@ export default function VendorsListPage() {
             Approved suppliers list for procurement
           </p>
         </div>
-        <Button asChild>
-          <Link href="/vendors/new">New Vendor</Link>
-        </Button>
+
+        {/* New hanya admin */}
+        <RoleGate admin>
+          <Button asChild>
+            <Link href="/vendors/new">New Vendor</Link>
+          </Button>
+        </RoleGate>
       </div>
 
       {/* Search */}
@@ -107,42 +114,49 @@ export default function VendorsListPage() {
                 {v.email || '—'} • {v.phone || '—'}
               </div>
             </div>
+
             <div className="col-span-4 truncate">{v.address || '—'}</div>
+
             <div className="col-span-2 flex justify-end gap-3">
+              {/* Detail boleh semua */}
               <Link className="underline text-sm" href={`/vendors/${v.id}`}>
                 Detail
               </Link>
-              <Link className="underline text-sm" href={`/vendors/${v.id}/edit`}>
-                Edit
-              </Link>
 
-              {/* AlertDialog Delete */}
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <button className="text-sm text-red-600 underline">Delete</button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete Vendor</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Are you sure you want to delete <strong>{v.name}</strong>? 
-                      This action cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() => handleDelete(v.id)}
-                      className="bg-red-600 text-white hover:bg-red-700"
-                    >
-                      Delete
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+              {/* Edit/Delete hanya admin */}
+              <RoleGate admin>
+                <Link className="underline text-sm" href={`/vendors/${v.id}/edit`}>
+                  Edit
+                </Link>
+
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <button className="text-sm text-red-600 underline">Delete</button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete Vendor</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Are you sure you want to delete <strong>{v.name}</strong>? This action
+                        cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => handleDelete(v.id)}
+                        className="bg-red-600 text-white hover:bg-red-700"
+                      >
+                        Delete
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </RoleGate>
             </div>
           </div>
         ))}
+
         {rows.length === 0 && (
           <div className="p-6 text-sm text-muted-foreground">No vendors.</div>
         )}
@@ -150,21 +164,13 @@ export default function VendorsListPage() {
 
       {/* Pagination */}
       <div className="flex items-center justify-end gap-2">
-        <Button
-          variant="outline"
-          disabled={page <= 1}
-          onClick={() => setPage((p) => p - 1)}
-        >
+        <Button variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
           Prev
         </Button>
         <div className="text-sm">
           Page {page} / {pages}
         </div>
-        <Button
-          variant="outline"
-          disabled={page >= pages}
-          onClick={() => setPage((p) => p + 1)}
-        >
+        <Button variant="outline" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
           Next
         </Button>
       </div>

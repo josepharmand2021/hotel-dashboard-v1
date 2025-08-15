@@ -2,6 +2,8 @@
 
 import { revalidatePath } from 'next/cache';
 import { supabaseServer } from '@/lib/supabase/server';
+import { requireAdminServer } from '@/lib/supabase/acl-server';
+
 
 export async function listVendors({
   page = 1,
@@ -47,6 +49,7 @@ export async function updateVendor(id: number, payload: any) {
 }
 
 export async function deleteVendor(id: number) {
+  await requireAdminServer(); // viewer → Forbidden
   const sb = supabaseServer();
   const { error } = await sb.from('vendors').delete().eq('id', id);
   if (error) throw error;
