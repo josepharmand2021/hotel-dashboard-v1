@@ -1,3 +1,4 @@
+// src/features/purchase-orders/api.ts
 'use server';
 
 import { revalidatePath } from 'next/cache';
@@ -8,7 +9,7 @@ type POItem = { id?: number; description: string; qty: number; unit?: string|nul
 // ---------- helpers ----------
 const asNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
-const daysDiff = (a: Date, b: Date) => Math.floor((Number(a) - Number(b)) / 86400000);
+const daysDiff  = (a: Date, b: Date) => Math.floor((Number(a) - Number(b)) / 86400000);
 
 export async function createPurchaseOrder(input: {
   po_number: string; vendor_id: number;
@@ -20,7 +21,7 @@ export async function createPurchaseOrder(input: {
   due_date_override?: string|null;
   items: POItem[];
 }) {
-  const sb = supabaseServer();
+  const sb = await supabaseServer();                 // ← await
 
   const { data: poIns, error: poErr } = await sb
     .from('purchase_orders')
@@ -72,7 +73,7 @@ export async function updatePurchaseOrder(
     items: POItem[];
   }
 ) {
-  const sb = supabaseServer();
+  const sb = await supabaseServer();                 // ← await
 
   // header
   const { error: hdrErr } = await sb
@@ -122,7 +123,7 @@ export async function updatePurchaseOrder(
 }
 
 export async function deletePurchaseOrder(id: number) {
-  const sb = supabaseServer();
+  const sb = await supabaseServer();                 // ← await
   // hapus items dulu biar FK aman
   const { error: itemsErr } = await sb.from('po_items').delete().eq('purchase_order_id', id);
   if (itemsErr) throw itemsErr;
@@ -134,9 +135,8 @@ export async function deletePurchaseOrder(id: number) {
 }
 
 export async function getPurchaseOrder(id: number) {
-  const sb = supabaseServer();
+  const sb = await supabaseServer();                 // ← await
 
-  // Header + items + vendor
   const { data, error } = await sb
     .from('purchase_orders')
     .select(`
@@ -151,7 +151,6 @@ export async function getPurchaseOrder(id: number) {
     .single();
   if (error) throw error;
 
-  // Aggregat terms & totals
   const { data: terms, error: e2 } = await sb
     .from('v_po_with_terms')
     .select('*')
@@ -159,7 +158,6 @@ export async function getPurchaseOrder(id: number) {
     .single();
   if (e2) throw e2;
 
-  // Finance (paid, outstanding)
   const { data: fin, error: e3 } = await sb
     .from('v_po_finance')
     .select('total, paid, outstanding')
@@ -179,31 +177,23 @@ export async function getPurchaseOrder(id: number) {
 
   const subtotal   = Number(terms?.subtotal ?? 0);
   const taxAmount  = Number(terms?.tax_amount ?? 0);
-  // ✅ prefer terms.total_amount first, then finance.total
   const total      = Number(terms?.total_amount ?? fin?.total ?? 0);
   const paid       = Number(fin?.paid ?? 0);
-  // ✅ compute outstanding if finance.outstanding is null
-  const outstanding = Number(
-    fin?.outstanding ?? Math.max(total - paid, 0)
-  );
+  const outstanding = Number(fin?.outstanding ?? Math.max(total - paid, 0));
 
-  // unified payment_status & overdue
   const due = (terms?.due_date_effective as string | null) ?? null;
   let is_overdue = false, days_overdue = 0;
   if (outstanding > 0 && due) {
     const today = startOfDay(new Date());
-    const dueD = startOfDay(new Date(`${due}T00:00:00`));
-    if (dueD < today) {
-      is_overdue = true;
-      days_overdue = Math.max(1, daysDiff(today, dueD));
-    }
+    const dueD  = startOfDay(new Date(`${due}T00:00:00`));
+    if (dueD < today) { is_overdue = true; days_overdue = Math.max(1, daysDiff(today, dueD)); }
   }
 
-  let payment_status: 'UNPAID' | 'PARTIAL' | 'PAID' | 'OVERDUE';
+  let payment_status: 'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
   if (paid >= total - 0.5) payment_status = 'PAID';
-  else if (is_overdue)    payment_status = 'OVERDUE';
-  else if (paid > 0)      payment_status = 'PARTIAL';
-  else                    payment_status = 'UNPAID';
+  else if (is_overdue)     payment_status = 'OVERDUE';
+  else if (paid > 0)       payment_status = 'PARTIAL';
+  else                     payment_status = 'UNPAID';
 
   return {
     id: data.id,
@@ -224,7 +214,6 @@ export async function getPurchaseOrder(id: number) {
     due_date_override: data.due_date_override ?? null,
     items,
 
-    // terms/totals
     subtotal,
     taxAmount,
     total,
@@ -232,10 +221,9 @@ export async function getPurchaseOrder(id: number) {
     effective_term_days: Number(terms?.effective_term_days ?? 0),
     due_date_effective: terms?.due_date_effective ?? null,
 
-    // finance (unified)
     paid,
     outstanding,
-    payment_status,   // PAID | OVERDUE | PARTIAL | UNPAID
+    payment_status,
     is_overdue,
     days_overdue,
   };
@@ -244,9 +232,8 @@ export async function getPurchaseOrder(id: number) {
 export async function listPurchaseOrdersServer({
   page = 1, pageSize = 10, q = ''
 }: { page?: number; pageSize?: number; q?: string }) {
-  const sb = supabaseServer();
+  const sb = await supabaseServer();                 // ← await
 
-  // base from terms view (includes vendor_name, due_date_effective, totals)
   let q1 = sb.from('v_po_with_terms')
     .select('*', { count: 'exact' })
     .order('po_date', { ascending: false })
@@ -283,29 +270,24 @@ export async function listPurchaseOrdersServer({
     let is_overdue = false, days_overdue = 0;
     if (outstanding > 0 && due) {
       const today = startOfDay(new Date());
-      const dueD = startOfDay(new Date(`${due}T00:00:00`));
-      if (dueD < today) {
-        is_overdue = true;
-        days_overdue = Math.max(1, daysDiff(today, dueD));
-      }
+      const dueD  = startOfDay(new Date(`${due}T00:00:00`));
+      if (dueD < today) { is_overdue = true; days_overdue = Math.max(1, daysDiff(today, dueD)); }
     }
 
-    let payment_status: 'UNPAID' | 'PARTIAL' | 'PAID' | 'OVERDUE';
+    let payment_status: 'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
     if (paid >= total - 0.5) payment_status = 'PAID';
-    else if (is_overdue)    payment_status = 'OVERDUE';
-    else if (paid > 0)      payment_status = 'PARTIAL';
-    else                    payment_status = 'UNPAID';
+    else if (is_overdue)     payment_status = 'OVERDUE';
+    else if (paid > 0)       payment_status = 'PARTIAL';
+    else                     payment_status = 'UNPAID';
 
     return {
       ...r,
-      // unify fields used on FE
       total,
       paid,
       outstanding,
       payment_status,
       is_overdue,
       days_overdue,
-      // convenience alias if FE expects "due_date"
       due_date: r.due_date_effective ? String(r.due_date_effective).slice(0,10) : null,
     };
   });
@@ -314,7 +296,7 @@ export async function listPurchaseOrdersServer({
 }
 
 export async function updatePurchaseOrderStatus(id: number, status: string) {
-  const sb = supabaseServer();
+  const sb = await supabaseServer();                 // ← await
   const { error } = await sb.from('purchase_orders').update({ status }).eq('id', id);
   if (error) throw error;
   revalidatePath('/purchase-orders');

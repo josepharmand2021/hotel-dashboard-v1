@@ -115,18 +115,18 @@ export function ExpenseTable({
                 {show.po && (
                   <TableCell>
                     {r.po_refs?.length ? (
-                      <div className="flex flex-wrap gap-1">
-                        {r.po_refs.map(po => (
-                          <Link
-                            key={po.id}
-                            href={`/purchase-orders/${po.id}`}
-                            onClick={(e)=>e.stopPropagation()}
-                            className="underline underline-offset-4"
-                          >
-                            {po.po_number}
-                          </Link>
-                        ))}
-                      </div>
+<div className="flex flex-wrap gap-1">
+  {r.po_refs.map((po) => (
+    <Link
+      key={`po-${po.id}`} // pakai prefix biar lebih unik
+      href={`/purchase-orders/${po.id}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {po.po_number}
+    </Link>
+  ))}
+</div>
+
                     ) : '—'}
                   </TableCell>
                 )}

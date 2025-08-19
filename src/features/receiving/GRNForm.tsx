@@ -7,12 +7,15 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import ComboboxVendor from '@/components/ComboboxVendor';
-import ComboboxPO from '@/components/ComboboxPO';
+import ComboboxPO, { type POOpt } from '@/components/ComboboxPO';
 import { supabase } from '@/lib/supabase/client';
 
 type Mode = 'PO' | 'NON_PO';
 type VendorOpt = { id: number; name: string };
-type POChoice = { id:number; po_number:string; vendor_name:string; date?:string|null };
+
+// Fallback kalau PPOpt TIDAK diexport oleh ComboboxPO
+// Hapus blok di bawah kalau import PPOpt di atas sudah ada.
+// type PPOpt = { id: number; po_number: string; vendor_id: number; vendor_name?: string; date?: string | null };
 
 function getVendorName(v: any): string {
   if (!v) return '';
@@ -30,7 +33,7 @@ export default function GRNForm({ onClose }: { onClose: () => void }) {
   const [note, setNote] = useState<string>('');
 
   // PO
-  const [poChoice, setPoChoice] = useState<POChoice | null>(null);
+  const [poChoice, setPoChoice] = useState<POOpt | null>(null);                // ← pakai PPOpt
   const [purchaseOrderId, setPurchaseOrderId] = useState<number | undefined>();
   const [poItems, setPoItems] = useState<Array<{
     id:number; description:string|null; unit:string|null;
@@ -47,7 +50,9 @@ export default function GRNForm({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     setPoItems([]);
     setPurchaseOrderId(poChoice?.id);
-  }, [poChoice?.id]);
+    // jika combobox sudah tahu vendor_id, kamu bisa langsung autofill vendor:
+    if (poChoice?.vendor_id) setVendor({ id: poChoice.vendor_id, name: poChoice.vendor_name ?? '' });
+  }, [poChoice?.id]); // sengaja tetap depend ke id; jangan lupa vendor sudah dihandle di loader juga
 
   // ketika pindah ke Non-PO, bersihkan state PO biar vendor bisa diedit bebas
   useEffect(() => {
@@ -55,7 +60,6 @@ export default function GRNForm({ onClose }: { onClose: () => void }) {
       setPoChoice(null);
       setPurchaseOrderId(undefined);
       setPoItems([]);
-      // pastikan selalu ada minimal 1 baris Non-PO
       setNPItems(prev => (prev.length ? prev : [blankNP()]));
     }
   }, [mode]);
@@ -81,7 +85,7 @@ export default function GRNForm({ onClose }: { onClose: () => void }) {
         }));
         setPoItems(rows);
 
-        // autofill vendor
+        // autofill vendor dari response header atau fallback query
         const header = resp?.header;
         if (header?.vendor_id) {
           setVendor({ id: header.vendor_id, name: header.vendor_name ?? getVendorName(header.vendors) });

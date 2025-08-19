@@ -12,9 +12,33 @@ import { toast } from 'sonner';
 
 const fmtID = new Intl.NumberFormat('id-ID');
 
-export default function PlanList() {
+type Props = { canWrite?: boolean };
+
+export default function PlanList({ canWrite }: Props) {
   const [rows, setRows] = useState<PlanSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [write, setWrite] = useState<boolean>(!!canWrite); // ← sumber kebenaran di UI
+
+  // Fallback: kalau prop tidak ada/false, cek role ke server
+  useEffect(() => {
+    let abort = false;
+    async function ensureWriteFlag() {
+      if (canWrite) {
+        setWrite(true);
+        return;
+      }
+      try {
+        const res = await fetch('/api/role-flags', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!abort) setWrite(!!data?.canWrite); // admin || superadmin
+      } catch {
+        /* ignore */
+      }
+    }
+    ensureWriteFlag();
+    return () => { abort = true; };
+  }, [canWrite]);
 
   useEffect(() => {
     (async () => {
@@ -23,7 +47,7 @@ export default function PlanList() {
         const data = await listPlans();
         setRows(data || []);
       } catch (e: any) {
-        toast.error(e.message || 'Gagal memuat');
+        toast.error(e?.message || 'Gagal memuat');
       } finally {
         setLoading(false);
       }
@@ -34,9 +58,13 @@ export default function PlanList() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Capital Injections</h2>
-        <Button asChild>
-          <Link href="/finance/capital-injections/new">New Plan</Link>
-        </Button>
+
+        {/* tampil hanya untuk admin/super */}
+        {write && (
+          <Button asChild>
+            <Link href="/finance/capital-injections/new">New Plan</Link>
+          </Button>
+        )}
       </div>
 
       <Card>
@@ -81,10 +109,7 @@ export default function PlanList() {
                       <TableCell className="text-right">Rp {fmtID.format(posted)}</TableCell>
                       <TableCell>
                         <div className="w-40 bg-muted rounded-full h-2" aria-label={`Progress ${pct}%`}>
-                          <div
-                            className={`h-2 rounded-full ${pct >= 100 ? 'bg-green-500' : 'bg-primary'}`}
-                            style={{ width: `${pct}%` }}
-                          />
+                          <div className={`h-2 rounded-full ${pct >= 100 ? 'bg-green-500' : 'bg-primary'}`} style={{ width: `${pct}%` }} />
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">{pct}%</div>
                       </TableCell>

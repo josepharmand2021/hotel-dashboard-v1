@@ -1,9 +1,12 @@
+'use server';
+
 // src/lib/supabase/server.ts
 import { cookies } from 'next/headers';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
 export async function supabaseServer() {
-  const cookieStore = await Promise.resolve(cookies());
+  // Next 15: cookies() bisa diperlakukan async → gunakan await
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -14,10 +17,11 @@ export async function supabaseServer() {
           return cookieStore.get(name)?.value;
         },
         set(name: string, value: string, options: CookieOptions) {
-          cookieStore.set?.({ name, value, ...options });
+          cookieStore.set(name, value, options);
         },
         remove(name: string, options: CookieOptions) {
-          cookieStore.set?.({ name, value: '', ...options, maxAge: 0 });
+          // next/headers belum ada delete → set maxAge=0
+          cookieStore.set(name, '', { ...options, maxAge: 0 });
         },
       },
     }

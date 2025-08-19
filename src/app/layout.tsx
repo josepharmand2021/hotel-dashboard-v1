@@ -1,24 +1,19 @@
 // app/layout.tsx
-import './globals.css';
-import AppSidebar from '@/components/layout/AppSidebar';
-import AppTopbar from '@/components/layout/AppTopbar';
-import { Toaster } from 'sonner';
-import { AclProvider } from '@/lib/supabase/acl'; // ⬅️ tambah ini
+'use client';
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+import type { ReactNode } from 'react';
+import { Toaster } from 'sonner';
+import './globals.css';
+import { AclProvider } from '@/lib/supabase/acl'; // ⬅️ pastikan path sesuai
+
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen">
-        <AclProvider> {/* ⬅️ bungkus seluruh UI */}
-          <div className="flex">
-            <AppSidebar />
-            <div className="flex-1">
-              <AppTopbar />
-              <main className="p-4">{children}</main>
-            </div>
-          </div>
-          <Toaster />
+      <body className="min-h-screen bg-background">
+        <AclProvider>
+          {children}
         </AclProvider>
+        <Toaster richColors position="top-center" />
       </body>
     </html>
   );

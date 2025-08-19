@@ -1,59 +1,63 @@
-"use client";
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { supabase } from "./client";
+// lib/supabase/acl.tsx
+'use client';
 
-type Acl = { loading: boolean; isAdmin: boolean; isViewer: boolean };
-const Ctx = createContext<Acl>({ loading: true, isAdmin: false, isViewer: false });
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { supabase } from './client';
 
-export function AclProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<Acl>({ loading: true, isAdmin: false, isViewer: false });
+type AclState = {
+  ready: boolean;
+  isAdmin: boolean;
+  isSuperAdmin: boolean;
+};
 
-  async function refreshRoles() {
-    const [{ data: admin }, { data: viewer }] = await Promise.all([
-      supabase.rpc("has_role", { p_role: "admin" }),
-      supabase.rpc("has_role", { p_role: "viewer" }),
-    ]);
-    setState({ loading: false, isAdmin: !!admin, isViewer: !!viewer });
-  }
+const AclCtx = createContext<AclState>({ ready: false, isAdmin: false, isSuperAdmin: false });
+
+export function AclProvider({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<AclState>({ ready: false, isAdmin: false, isSuperAdmin: false });
 
   useEffect(() => {
-    let alive = true;
-
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!alive) return;
-      if (!session) {
-        setState({ loading: false, isAdmin: false, isViewer: false });
-      } else {
-        await refreshRoles();
+      // gunakan client supabase di browser
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setState({ ready: true, isAdmin: false, isSuperAdmin: false });
+        return;
       }
+
+      // cek role via RPC
+      const { data: isAdmin } = await supabase.rpc('has_role_current', { p_code: 'admin' });
+      const { data: isSuper } = await supabase.rpc('is_super_admin');
+
+      setState({
+        ready: true,
+        isAdmin: !!isAdmin,
+        isSuperAdmin: !!isSuper,
+      });
     })();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!alive) return;
-      if (!session) setState({ loading: false, isAdmin: false, isViewer: false });
-      else refreshRoles();
-    });
-
-    return () => { alive = false; sub.subscription.unsubscribe(); };
   }, []);
 
-  return <Ctx.Provider value={state}>{children}</Ctx.Provider>;
+  return <AclCtx.Provider value={state}>{children}</AclCtx.Provider>;
 }
 
-export const useAcl = () => useContext(Ctx);
+export function useACL() {
+  return useContext(AclCtx);
+}
 
+/** Simple gate untuk menyembunyikan UI berdasarkan role */
 export function RoleGate({
-  admin = false,
-  fallback = null,
+  admin,
+  superadmin,
   children,
 }: {
   admin?: boolean;
-  fallback?: React.ReactNode;
-  children: React.ReactNode;
+  superadmin?: boolean;
+  children: ReactNode;
 }) {
-  const { loading, isAdmin } = useAcl();
-  if (loading) return null;
-  if (admin && !isAdmin) return <>{fallback}</>;
+  const { ready, isAdmin, isSuperAdmin } = useACL();
+  if (!ready) return null; // atau skeleton kecil
+
+  if (superadmin) return isSuperAdmin ? <>{children}</> : null;
+  if (admin) return isAdmin || isSuperAdmin ? <>{children}</> : null;
+
   return <>{children}</>;
 }

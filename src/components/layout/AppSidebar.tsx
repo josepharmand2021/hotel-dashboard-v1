@@ -3,31 +3,32 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useMemo, useState } from 'react';
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import {
+  Accordion, AccordionContent, AccordionItem, AccordionTrigger,
+} from '@/components/ui/accordion';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   Menu, ChevronLeft, ChevronRight, LayoutDashboard, FileText,
-  PackageCheck, Wallet, BarChart3, Settings2, Users, Building2,
+  PackageCheck, Wallet, BarChart3, Settings2, Users as UsersIcon,
 } from 'lucide-react';
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
 }
 
-/* ===== NAV ===== */
 type NavLink = { label: string; href: string };
 type NavGroup = {
+  key: string;
   label: string;
   icon?: React.ComponentType<{ className?: string }>;
   href?: string;
   items?: NavLink[];
-  key: string;
 };
 
-const NAV: NavGroup[] = [
+const BASE_NAV: NavGroup[] = [
   { key: 'dashboard', label: 'Overview', icon: LayoutDashboard, href: '/dashboard/overview' },
   {
     key: 'purchase-orders',
@@ -35,7 +36,7 @@ const NAV: NavGroup[] = [
     icon: FileText,
     items: [
       { label: 'List', href: '/purchase-orders' },
-      { label: 'New', href: '/purchase-orders/new' },
+      { label: 'New', href: '/purchase-orders/new' }, // ← akan difilter utk viewer
     ],
   },
   {
@@ -55,7 +56,7 @@ const NAV: NavGroup[] = [
       { label: 'RAB Allocations', href: '/finance/rab-allocations' },
     ],
   },
-    {
+  {
     key: 'settings',
     label: 'Settings',
     icon: Settings2,
@@ -63,8 +64,8 @@ const NAV: NavGroup[] = [
       { label: 'Bank Accounts', href: '/settings/finance/bank-accounts' },
       { label: 'Categories', href: '/masters/categories' },
       { label: 'Subcategories', href: '/masters/subcategories' },
-        {label: 'Vendors', href: '/vendors' },
-  {label: 'Shareholders', href: '/shareholders' },
+      { label: 'Vendors', href: '/vendors' },
+      { label: 'Shareholders', href: '/shareholders' },
     ],
   },
   {
@@ -76,7 +77,6 @@ const NAV: NavGroup[] = [
       { label: 'Budget Lines', href: '/budget-lines' },
     ],
   },
-
 ];
 
 function isActive(href: string, pathname: string) {
@@ -122,9 +122,51 @@ function SidebarLink({
   return <Link href={href}>{content}</Link>;
 }
 
-export default function Sidebar({ className }: { className?: string }) {
+export default function AppSidebar({
+  className,
+  isAdmin = false,  // admin OR superadmin
+  isSuper = false,  // superadmin
+}: {
+  className?: string;
+  isAdmin?: boolean;
+  isSuper?: boolean;
+}) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const canWrite = isAdmin || isSuper;
+
+  const NAV = useMemo<NavGroup[]>(() => {
+    const out: NavGroup[] = [];
+
+    for (const g of BASE_NAV) {
+      // Hide Settings untuk viewer; tambah Security utk super
+      if (g.key === 'settings') {
+        if (!isAdmin) continue;
+        const items = [...(g.items ?? [])];
+        if (isSuper) items.unshift({ label: 'Security', href: '/settings/security' });
+        out.push({ ...g, items });
+        continue;
+      }
+
+      // Filter item "New" pada Purchase Orders untuk viewer
+      if (g.key === 'purchase-orders') {
+        const items = canWrite
+          ? (g.items ?? [])
+          : (g.items ?? []).filter(it => it.label.toLowerCase() !== 'new');
+        out.push({ ...g, items });
+        continue;
+      }
+
+      out.push(g);
+    }
+
+    // Users & Roles (top-level) hanya admin/super
+    if (isAdmin) {
+      out.splice(1, 0, { key: 'users', label: 'Users & Roles', icon: UsersIcon, href: '/users' });
+    }
+
+    return out;
+  }, [isAdmin, isSuper, canWrite]);
 
   const defaultOpen = useMemo(() => {
     const open: string[] = [];
@@ -133,12 +175,11 @@ export default function Sidebar({ className }: { className?: string }) {
       if (g.items.some((i) => isActive(i.href, pathname))) open.push(g.key);
     }
     return open.length ? open : ['finance'];
-  }, [pathname]);
+  }, [pathname, NAV]);
 
   return (
     <aside
       className={cn(
-        // sticky + 100dvh supaya tidak kepotong dan aman di mobile
         'sticky top-0 h-[100dvh] border-r bg-background/60 backdrop-blur supports-[backdrop-filter]:bg-background/50',
         collapsed ? 'w-[74px]' : 'w-72',
         'hidden md:flex flex-col',
@@ -222,30 +263,6 @@ export default function Sidebar({ className }: { className?: string }) {
           })}
         </nav>
       </ScrollArea>
-
-      {/* Footer DIHAPUS (PO Print Dev) */}
     </aside>
-  );
-}
-
-/* Mobile header (opsional) */
-export function MobileSidebar() {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="md:hidden sticky top-0 z-50 border-b bg-background/60 backdrop-blur supports-[backdrop-filter]:bg-background/50">
-      <div className="flex items-center gap-2 px-3 py-2">
-        <Button size="icon" variant="ghost" onClick={() => setOpen(true)} aria-label="Open menu">
-          <Menu className="h-5 w-5" />
-        </Button>
-        <div className="font-semibold">Tammu Construction</div>
-      </div>
-      {open && (
-        <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setOpen(false)}>
-          <div className="absolute left-0 top-0 h-[100dvh] w-72 bg-background shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <Sidebar />
-          </div>
-        </div>
-      )}
-    </div>
   );
 }

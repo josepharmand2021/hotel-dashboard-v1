@@ -143,50 +143,83 @@ export async function listExpenses(filters: ExpenseListFilters) {
     page = 1, pageSize = 20, orderBy = 'expense_date', orderDir = 'desc',
   } = filters;
 
-  const { data, error } = await supabase.rpc('list_expenses_rpc', {
-    p_month: month ?? null,
-    p_date_from: date_from ?? null,
-    p_date_to: date_to ?? null,
-    p_source: source ?? null,
-    p_status: status ?? null,
-    p_category_id: category_id ?? null,
-    p_subcategory_id: subcategory_id ?? null,
-    p_shareholder_id: shareholder_id ?? null,
-    p_q: q ?? null,
-    p_page: page,
-    p_page_size: pageSize,
-    p_order_by: orderBy,
-    p_order_dir: orderDir,
-  });
+  let query = supabase
+    .from('expenses')
+    .select(`
+      id, expense_date, period_month, source, status, amount,
+      category_id, subcategory_id, account_id,
+      shareholder_id, vendor_id, vendor_name, invoice_no, note,
+      created_at, updated_at,
+      categories:categories(name),
+      subcategories:subcategories(name),
+      shareholders:shareholders(name),
+      vendors:vendors(name),
+      po_expense_allocations:po_expense_allocations(
+        purchase_orders:purchase_orders(id, po_number)
+      )
+    `, { count: 'exact', head: false });
 
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
+    const { from, to } = monthToRange(month);
+    query = query.gte('expense_date', from).lt('expense_date', to);
+  } else {
+    if (date_from) query = query.gte('expense_date', date_from);
+    if (date_to)   query = query.lte('expense_date', date_to);
+  }
+
+  if (source && source !== 'all') query = query.eq('source', source);
+  if (status && status !== 'all') query = query.eq('status', status);
+  if (category_id) query = query.eq('category_id', category_id);
+  if (subcategory_id) query = query.eq('subcategory_id', subcategory_id);
+  if (shareholder_id) query = query.eq('shareholder_id', shareholder_id);
+
+  if (q && q.trim()) {
+    const term = `%${q.trim()}%`;
+    query = query.or(`vendor_name.ilike.${term},invoice_no.ilike.${term},note.ilike.${term}`);
+  }
+
+  query = query.order(orderBy, { ascending: orderDir === 'asc' })
+               .range((page - 1) * pageSize, (page * pageSize) - 1);
+
+  const { data, error, count } = await query;
   if (error) throw error;
 
-  const rows: ExpenseListItem[] = (data ?? []).map((r: any) => ({
-    id: r.id,
-    expense_date: r.expense_date,
-    period_month: r.period_month,
-    source: r.source,
-    status: r.status,
-    amount: r.amount,
-    category_id: r.category_id,
-    subcategory_id: r.subcategory_id,
-    category_name: r.category_name ?? '',
-    subcategory_name: r.subcategory_name ?? '',
-    shareholder_id: r.shareholder_id ?? null,
-    shareholder_name: r.shareholder_name ?? null,
-    vendor_id: r.vendor_id ?? null,
-    vendor_name: r.vendor_name ?? null,
-    invoice_no: r.invoice_no ?? null,
-    note: r.note ?? null,
-    created_at: r.created_at,
-    updated_at: r.updated_at,
-    po_refs: Array.isArray(r.po_refs) ? r.po_refs : [],   // <-- dari RPC
-  }));
+  const rows: ExpenseListItem[] = (data || []).map((r: any) => {
+    const po_refs = (() => {
+      const list = (r.po_expense_allocations || [])
+        .map((a: any) => pickOne(a?.purchase_orders))
+        .filter(Boolean)
+        .map((po: any) => ({ id: Number(po.id), po_number: String(po.po_number || '') }));
+      const uniq = new Map<number, { id:number; po_number:string }>();
+      for (const x of list) uniq.set(x.id, x);
+      return [...uniq.values()];
+    })();
 
-  const total = Number((data?.[0]?.total_count) ?? 0);
-  return { rows, count: total };
+    return {
+      id: r.id,
+      expense_date: r.expense_date,
+      period_month: r.period_month,
+      source: r.source,
+      status: r.status,
+      amount: r.amount,
+      category_id: r.category_id,
+      subcategory_id: r.subcategory_id,
+      category_name: r.categories?.name ?? '',
+      subcategory_name: r.subcategories?.name ?? '',
+      shareholder_id: r.shareholder_id ?? null,
+      shareholder_name: r.shareholders?.name ?? null,
+      vendor_id: r.vendor_id ?? null,
+      vendor_name: r.vendor_name ?? r.vendors?.name ?? null,
+      invoice_no: r.invoice_no ?? null,
+      note: r.note ?? null,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      po_refs, // ⬅️ NEW
+    };
+  });
+
+  return { rows, count: count ?? 0 };
 }
-
 
 export async function getExpense(id: number): Promise<ExpenseDetail> {
   const { data, error } = await supabase

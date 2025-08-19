@@ -152,16 +152,30 @@ export async function listContributions(planId: number) {
   return data;
 }
 
-/** bankAccountId dibuat OPSIONAL supaya form kamu sekarang tetap jalan */
 export async function addContribution(payload: {
   planId: number;
   shareholderId: number;
   amount: number;
   transferDate: string;
-  bankAccountId?: number; // <- optional
+  bankAccountId?: number; // optional dari UI
   note?: string | null;
   status?: 'draft' | 'posted';
 }) {
+  // target status dari UI, default 'posted'
+  let status: 'draft' | 'posted' = payload.status ?? 'posted';
+  // bank id dari UI bila ada
+  let bankId: number | null = payload.bankAccountId ?? null;
+
+  // jika mau posted tapi bank belum ada, coba pakai default PT bank
+  if (status === 'posted' && !bankId) {
+    try {
+      bankId = await getDefaultPTBankId();
+    } catch {
+      // tidak ada default bank → simpan sebagai draft agar tidak error DB
+      status = 'draft';
+    }
+  }
+
   const { data, error } = await supabase
     .from('capital_contributions')
     .insert({
@@ -169,20 +183,53 @@ export async function addContribution(payload: {
       shareholder_id: payload.shareholderId,
       amount: Math.round(payload.amount),
       transfer_date: payload.transferDate,
-      bank_account_id: payload.bankAccountId ?? null,
+      bank_account_id: bankId,          // bisa null bila draft
       note: payload.note ?? null,
-      status: payload.status ?? 'posted',
+      status,                           // posted bila punya bank, draft kalau tidak
     })
     .select('id')
     .single();
+
   if (error) throw error;
   return data as { id: number };
 }
 
-export async function setContributionStatus(id: number, status: 'draft' | 'posted' | 'void', _reason?: string) {
-  const { error } = await supabase.from('capital_contributions').update({ status }).eq('id', id);
+
+
+export async function setContributionStatus(
+  id: number,
+  status: 'draft' | 'posted' | 'void',
+  _reason?: string
+) {
+  if (status === 'posted') {
+    // pastikan bank_account_id terisi saat posting
+    let bankId: number;
+    try {
+      bankId = await getDefaultPTBankId();
+    } catch {
+      throw new Error(
+        'Tidak ada rekening PT default. Set di Settings → Finance → Bank Accounts terlebih dahulu.'
+      );
+    }
+
+    const { error } = await supabase
+      .from('capital_contributions')
+      .update({ status: 'posted', bank_account_id: bankId })
+      .eq('id', id);
+
+    if (error) throw error;
+    return;
+  }
+
+  // selain 'posted', cukup update status saja
+  const { error } = await supabase
+    .from('capital_contributions')
+    .update({ status })
+    .eq('id', id);
+
   if (error) throw error;
 }
+
 
 export async function updateContribution(id: number, payload: {
   amount: number; transferDate: string; note?: string | null; status?: 'draft'|'posted'|'void'; bankAccountId?: number;

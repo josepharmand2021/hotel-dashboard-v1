@@ -1,5 +1,9 @@
-// use client-safe supabase
-import { supabase } from "@/lib/supabase/client";
+// src/features/bank-accounts/api.ts
+// All functions here are safe to import in Client Components.
+
+import { supabase } from '@/lib/supabase/client';
+
+/* ========= Types ========= */
 
 export type BankAccount = {
   id: number;
@@ -13,16 +17,76 @@ export type BankAccount = {
   created_at?: string;
 };
 
+/* ========= Queries ========= */
+
+/** List all bank accounts (default first, then by created_at) */
 export async function listBankAccounts(): Promise<BankAccount[]> {
   const { data, error } = await supabase
-    .from("bank_accounts")
-    .select("id,name,bank_name,account_name,account_number,is_active,is_default,note,created_at")
-    .order("is_default", { ascending: false })
-    .order("created_at", { ascending: true });
+    .from('bank_accounts')
+    .select(
+      'id,name,bank_name,account_name,account_number,is_active,is_default,note,created_at'
+    )
+    .order('is_default', { ascending: false })
+    .order('created_at', { ascending: true });
+
   if (error) throw error;
-  return data as BankAccount[];
+  return (data || []) as BankAccount[];
 }
 
+/** Get the current default PT bank (full row). Returns null if none. */
+export async function getDefaultPTBank(): Promise<BankAccount | null> {
+  const { data, error } = await supabase
+    .from('bank_accounts')
+    .select(
+      'id,name,bank_name,account_name,account_number,is_active,is_default,created_at'
+    )
+    .eq('is_active', true)
+    .eq('is_default', true)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as BankAccount | null) ?? null;
+}
+
+/** Get the current default PT bank id. Falls back to oldest active. Throws if none active. */
+export async function getDefaultPTBankId(): Promise<number> {
+  // Try the default
+  const def = await getDefaultPTBank();
+  if (def?.id) return def.id;
+
+  // Fallback: oldest active
+  const { data: anyActive, error: e2 } = await supabase
+    .from('bank_accounts')
+    .select('id')
+    .eq('is_active', true)
+    .order('created_at', { ascending: true })
+    .limit(1);
+
+  if (e2) throw e2;
+  const fallbackId = anyActive?.[0]?.id as number | undefined;
+  if (fallbackId) return fallbackId;
+
+  throw new Error(
+    'Belum ada rekening PT aktif. Set dulu di Settings → Finance → Bank Accounts.'
+  );
+}
+
+/** Safe version: returns null instead of throwing when no active/default exists. */
+export async function getDefaultPTBankIdSafe(): Promise<number | null> {
+  try {
+    return await getDefaultPTBankId();
+  } catch {
+    return null;
+  }
+}
+
+/* ========= Mutations ========= */
+
+/**
+ * Create a bank account. If `is_default` is true, it will call
+ * `set_default_pt_bank(p_id)` to enforce the single-default rule.
+ * Returns the new account id.
+ */
 export async function createBankAccount(input: {
   name: string;
   bank_name?: string;
@@ -31,89 +95,85 @@ export async function createBankAccount(input: {
   note?: string;
   is_default?: boolean;
   is_active?: boolean;
-}) {
+}): Promise<number> {
   const { data, error } = await supabase
-    .from("bank_accounts")
+    .from('bank_accounts')
     .insert([{ ...input, is_active: input.is_active ?? true }])
-    .select("id,is_default")
+    .select('id,is_default')
     .single();
+
   if (error) throw error;
 
-  if (data.is_default) {
-    const { error: e2 } = await supabase.rpc("set_default_pt_bank", { p_id: data.id });
+  // If the new account should be default, let the RPC enforce single-default.
+  if (data?.is_default) {
+    const { error: e2 } = await supabase.rpc('set_default_pt_bank', {
+      p_id: data.id,
+    });
     if (e2) throw e2;
   }
-  return data.id as number;
+
+  return data!.id as number;
 }
 
-export async function updateBankAccount(id: number, changes: Partial<BankAccount>) {
-  // Jika user men-set default dari edit
+/**
+ * Update a bank account. If `changes.is_default === true`,
+ * we delegate the default toggling to `set_default_pt_bank`
+ * and only update the remaining fields here.
+ */
+export async function updateBankAccount(
+  id: number,
+  changes: Partial<BankAccount>
+): Promise<void> {
+  // If setting this account as default, call the RPC to enforce single-default.
   if (changes.is_default) {
-    const { error: e2 } = await supabase.rpc("set_default_pt_bank", { p_id: id });
+    const { error: e2 } = await supabase.rpc('set_default_pt_bank', {
+      p_id: id,
+    });
     if (e2) throw e2;
-    const { error: e3 } = await supabase.from("bank_accounts").update({ ...changes, is_default: true }).eq("id", id);
-    if (e3) throw e3;
+
+    // Update other fields (excluding is_default which RPC already set).
+    const { is_default: _omit, ...rest } = changes;
+    if (Object.keys(rest).length) {
+      const { error: e3 } = await supabase
+        .from('bank_accounts')
+        .update(rest)
+        .eq('id', id);
+      if (e3) throw e3;
+    }
     return;
   }
-  const { error } = await supabase.from("bank_accounts").update(changes).eq("id", id);
+
+  // Normal update
+  const { error } = await supabase
+    .from('bank_accounts')
+    .update(changes)
+    .eq('id', id);
   if (error) throw error;
 }
 
-export async function deactivateBankAccount(id: number) {
-  const { error } = await supabase.from("bank_accounts").update({ is_active: false, is_default: false }).eq("id", id);
+/** Activate a bank account (does not change default flag). */
+export async function activateBankAccount(id: number): Promise<void> {
+  const { error } = await supabase
+    .from('bank_accounts')
+    .update({ is_active: true })
+    .eq('id', id);
   if (error) throw error;
 }
 
-export async function activateBankAccount(id: number) {
-  const { error } = await supabase.from("bank_accounts").update({ is_active: true }).eq("id", id);
+/**
+ * Deactivate a bank account. Also unsets `is_default`.
+ * (If you want to force a new default, call `setDefaultPTBank` afterwards.)
+ */
+export async function deactivateBankAccount(id: number): Promise<void> {
+  const { error } = await supabase
+    .from('bank_accounts')
+    .update({ is_active: false, is_default: false })
+    .eq('id', id);
   if (error) throw error;
 }
 
-export async function getDefaultPTBankId(): Promise<number> {
-  // cari default
-  const { data, error } = await supabase
-    .from("bank_accounts")
-    .select("id")
-    .eq("is_active", true)
-    .eq("is_default", true)
-    .order("created_at", { ascending: true })
-    .limit(1);
-
+/** Explicitly set some account as the default (via RPC). */
+export async function setDefaultPTBank(id: number): Promise<void> {
+  const { error } = await supabase.rpc('set_default_pt_bank', { p_id: id });
   if (error) throw error;
-  const defId = data?.[0]?.id;
-  if (defId) return defId;
-
-  // fallback: rekening aktif tertua
-  const { data: anyActive, error: e2 } = await supabase
-    .from("bank_accounts")
-    .select("id")
-    .eq("is_active", true)
-    .order("created_at", { ascending: true })
-    .limit(1);
-
-  if (e2) throw e2;
-  const fallbackId = anyActive?.[0]?.id;
-  if (fallbackId) return fallbackId;
-
-  // tidak ada rekening aktif sama sekali
-  throw new Error("Belum ada rekening PT aktif. Set dulu di Settings → Finance → Rekening PT.");
-}
-
-/** (Opsional) set suatu rekening jadi default – panggil RPC yang sudah kamu buat */
-export async function setDefaultPTBank(id: number) {
-  const { error } = await supabase.rpc("set_default_pt_bank", { p_id: id });
-  if (error) throw error;
-}
-
-/** (Opsional) ambil data rekening default (bukan hanya ID) */
-export async function getDefaultPTBank() {
-  const { data, error } = await supabase
-    .from("bank_accounts")
-    .select("id,name,bank_name,account_name,account_number,is_active,is_default")
-    .eq("is_active", true)
-    .eq("is_default", true)
-    .maybeSingle(); // tidak error kalau kosong
-
-  if (error) throw error;
-  return data; // bisa null kalau belum ada default
 }
