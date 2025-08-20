@@ -1,23 +1,33 @@
+// src/app/(app)/vendors/[id]/page.tsx
+export const runtime = 'nodejs';
+
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { getVendor, deleteVendor } from '@/features/vendors/api';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { getVendor } from '@/features/vendors/api';
 
 async function VendorDetailActions({ id }: { id: number }) {
   // server component – delete via action route or client dialog? We'll keep to link for edit.
   return (
     <div className="flex gap-2">
-      <Button asChild variant="outline"><Link href={`/vendors/${id}/edit`}>Edit</Link></Button>
+      <Button asChild variant="outline">
+        <Link href={`/vendors/${id}/edit`}>Edit</Link>
+      </Button>
       {/* For delete, handle in a client subcomponent if you want confirmation */}
     </div>
   );
 }
 
-export default async function VendorDetail({ params }: { params: { id: string } }) {
-  const v = await getVendor(Number(params.id));
+export default async function VendorDetail({
+  params,
+}: {
+  // ✅ Next.js 15 expects Promise here
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const v = await getVendor(Number(id));
 
   return (
     <div className="max-w-3xl space-y-4">
