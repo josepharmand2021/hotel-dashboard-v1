@@ -1,3 +1,4 @@
+// src/features/purchase-orders/PayFromPODialog.tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -120,9 +121,15 @@ export default function PayFromPODialog({
       try {
         const fin = await getPOFinance(po.id);
         if (cancelled) return;
-        const fresh = Math.max(fin.outstanding ?? (fin.total - fin.paid) ?? 0, 0);
+
+        // ✅ Perbaikan: fallback di operand, bukan di hasil pengurangan
+        const total = fin.total ?? 0;
+        const paid  = fin.paid  ?? 0;
+        const base  = total - paid;                  // selalu number
+        const fresh = Math.max(fin.outstanding ?? base, 0);
+
         setRemaining(fresh);
-        setAmount(prev => Math.min(prev ?? fresh, fresh)); // clamp to fresh remaining
+        setAmount(prev => Math.min(prev, fresh));    // clamp ke fresh remaining
       } catch {
         // keep the prop fallback if fetch fails
       }

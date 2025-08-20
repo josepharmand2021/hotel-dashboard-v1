@@ -1,21 +1,13 @@
+// src/middleware.ts
 import { NextResponse, type NextRequest } from 'next/server';
-import {
-  createServerClient,
-  type CookieOptions,
-} from '@supabase/ssr';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
-// infer the exact type for the `cookies` option from createServerClient
-type CookiesAdapter = NonNullable<
-  Parameters<typeof createServerClient>[2]
->['cookies'];
-
+// -- helper: file publik / path publik
 const PUBLIC_FILE = /\.(?:.*)$/i;
 const PUBLIC_PREFIXES = ['/_next', '/favicon', '/.well-known'];
 
 function isPublicPath(pathname: string) {
   if (
-    pathname.startsWith('/login') ||
-    pathname.startsWith('/register') ||
     pathname.startsWith('/forgot-password') ||
     pathname.startsWith('/reset-password') ||
     pathname.startsWith('/auth')
@@ -25,35 +17,45 @@ function isPublicPath(pathname: string) {
   return false;
 }
 
+// 🔧 Definisikan adapter cookies kita sendiri (stabil antar versi)
+type SupaCookieMethods = {
+  get: (name: string) => string | undefined;
+  set: (name: string, value: string, options?: CookieOptions) => void;
+  remove: (name: string, options?: CookieOptions) => void;
+};
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // public paths → skip Supabase
-  if (isPublicPath(pathname)) return NextResponse.next();
+  // Login/register TIDAK kita anggap publik, supaya bisa auto-redirect ke dashboard jika sudah login
+  if (isPublicPath(pathname)) {
+    return NextResponse.next();
+  }
 
   const res = NextResponse.next();
 
   const url  = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anon) return res; // fail-open if env missing
+  if (!url || !anon) return res; // fail-open kalau env belum ada
 
-  const cookiesAdapter: CookiesAdapter = {
-    get(name: string) {
+  const cookiesAdapter: SupaCookieMethods = {
+    get(name) {
       return req.cookies.get(name)?.value;
     },
-    set(name: string, value: string, options?: CookieOptions) {
+    set(name, value, options) {
       res.cookies.set({ name, value, ...options });
     },
-    remove(name: string, options?: CookieOptions) {
+    remove(name, options) {
       res.cookies.set({ name, value: '', maxAge: 0, ...options });
     },
   };
 
   const supabase = createServerClient(url, anon, { cookies: cookiesAdapter });
 
-  const { data } = await supabase.auth.getUser();
-  const user = data?.user ?? null;
+  const { data, error } = await supabase.auth.getUser();
+  const user = error ? null : data?.user ?? null;
 
+  // Belum login → redirect ke /login dengan ?next=
   if (!user) {
     const loginUrl = req.nextUrl.clone();
     loginUrl.pathname = '/login';
@@ -61,6 +63,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
+  // Sudah login tapi akses /login atau /register → dorong ke dashboard
   if (pathname.startsWith('/login') || pathname.startsWith('/register')) {
     const dash = req.nextUrl.clone();
     dash.pathname = '/dashboard/overview';
