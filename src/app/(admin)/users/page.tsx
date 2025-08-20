@@ -6,17 +6,20 @@ import { requireSuperAdminServer } from '@/lib/supabase/acl-server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 
-// ❗ pertahankan pola import seperti aslinya agar tidak bentrok export di ./actions
 import { createUserAndAssign, changeUserRole, deleteAuthUser } from './actions';
 import { superadminSetUserPassword } from './actions';
 import DeleteAuthButton from './DeleteAuthButton';
 
-// ===== Types & utils
 export type RoleCode = 'viewer' | 'admin' | 'superadmin';
 type RowRole = { user_id: string; roles: { code: RoleCode } };
 
-type MaybePromise<T> = T | Promise<T>;
-type SP = { page?: string; q?: string; role?: RoleCode | 'all' };
+// Next 15 types: searchParams diketik sebagai Promise<Record<string, string|string[]|undefined>>
+type SPRaw = Record<string, string | string[] | undefined>;
+
+function getParam(sp: SPRaw, key: string): string | undefined {
+  const v = sp[key];
+  return Array.isArray(v) ? v[0] : v;
+}
 
 function formatDT(dt?: string | null) {
   if (!dt) return '—';
@@ -44,11 +47,11 @@ function roleBadgeClass(role: RoleCode) {
   }
 }
 
-// ===== Page
 export default async function AdminUsersPage({
   searchParams,
 }: {
-  searchParams?: MaybePromise<SP>;
+  // ❗ Wajib Promise agar lolos constraint PageProps Next 15
+  searchParams?: Promise<SPRaw>;
 }) {
   // gate: superadmin only
   try {
@@ -60,11 +63,14 @@ export default async function AdminUsersPage({
     throw e;
   }
 
-  const sp = (await searchParams) ?? {};
-  const page = Math.max(1, Number(sp.page ?? 1));
+  const spRaw = (await searchParams) ?? {};
+  const page = Math.max(1, Number(getParam(spRaw, 'page') ?? '1'));
+  const query = (getParam(spRaw, 'q') ?? '').trim();
+  const roleParam = (getParam(spRaw, 'role') ?? 'all') as string;
+  const roleFilter: RoleCode | 'all' =
+    roleParam === 'admin' || roleParam === 'viewer' || roleParam === 'superadmin' ? (roleParam as RoleCode) : 'all';
+
   const perPage = 10;
-  const query = (sp.q ?? '').trim();
-  const roleFilter = (sp.role ?? 'all') as RoleCode | 'all';
 
   // 1) list auth users (service role)
   const admin = supabaseAdmin();
@@ -87,7 +93,7 @@ export default async function AdminUsersPage({
     (rs as RowRole[] | null)?.forEach((r) => roleMap.set(r.user_id, r.roles.code));
   }
 
-  // filter hasil halaman saat ini
+  // filter current page
   const filtered = users.filter((u) => {
     const role = roleMap.get(u.id) ?? ('viewer' as RoleCode);
     const matchRole = roleFilter === 'all' ? true : role === roleFilter;
@@ -116,13 +122,11 @@ export default async function AdminUsersPage({
 
           <div className="p-4">
             <form action={createUserAndAssign} className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {/* Email */}
               <div className="md:col-span-2">
                 <label className="text-sm font-medium" htmlFor="email">Email</label>
                 <input id="email" name="email" type="email" className="border rounded-md w-full h-9 px-3 text-sm" required />
               </div>
 
-              {/* Invite + Password */}
               <div className="md:col-span-1 grid grid-cols-1 gap-2">
                 <label className="flex items-center gap-2 text-sm whitespace-nowrap">
                   <input type="checkbox" name="sendInvite" defaultChecked />
@@ -131,13 +135,11 @@ export default async function AdminUsersPage({
                 <input name="password" type="password" placeholder="Set password (invite OFF)" className="border rounded-md w-full h-9 px-3 text-sm" />
               </div>
 
-              {/* Full name */}
               <div className="md:col-span-2">
                 <label className="text-sm font-medium" htmlFor="fullName">Full name (optional)</label>
                 <input id="fullName" name="fullName" placeholder="Jane Cooper" className="border rounded-md w-full h-9 px-3 text-sm" />
               </div>
 
-              {/* Role + submit */}
               <div className="md:col-span-1 flex items-end justify-between gap-3">
                 <div className="flex-1">
                   <label className="text-sm font-medium" htmlFor="roleCode">Role</label>
@@ -161,7 +163,6 @@ export default async function AdminUsersPage({
               <p className="text-xs text-muted-foreground">{filtered.length} shown · Page {page}</p>
             </div>
 
-            {/* Filters */}
             <form className="flex items-center gap-2" method="GET" action="/users">
               <input type="hidden" name="page" value={1} />
               <input name="q" placeholder="Search email…" defaultValue={query} className="border rounded-md h-9 px-3 text-sm w-[220px]" />
@@ -176,7 +177,6 @@ export default async function AdminUsersPage({
             </form>
           </div>
 
-          {/* Table */}
           <div className="overflow-auto">
             <table className="min-w-[880px] w-full table-fixed text-sm">
               <thead className="sticky top-0 bg-card">
@@ -196,29 +196,24 @@ export default async function AdminUsersPage({
 
                   return (
                     <tr key={u.id} className="align-top">
-                      {/* Email */}
                       <td className="py-3 px-3">
                         <div className="font-medium truncate">{u.email}</div>
                         <div className="text-[11px] text-muted-foreground truncate">ID: {u.id}</div>
                       </td>
 
-                      {/* Role */}
                       <td className="py-3 px-3">
                         <span className={['inline-flex items-center rounded-full px-2.5 h-6 text-xs capitalize', roleBadgeClass(currentRole)].join(' ')}>
                           {currentRole}
                         </span>
                       </td>
 
-                      {/* Meta */}
                       <td className="py-3 px-3">
                         <div className="text-xs text-muted-foreground">Created: {created}</div>
                         <div className="text-xs text-muted-foreground">Last sign in: {last}</div>
                       </td>
 
-                      {/* Actions */}
                       <td className="py-3 px-3">
                         <div className="flex items-center justify-end gap-2 flex-wrap">
-                          {/* Superadmin: set password */}
                           {isSuper && (
                             <form action={superadminSetUserPassword} className="flex items-center gap-2">
                               <input type="hidden" name="userId" value={u.id} />
@@ -234,7 +229,6 @@ export default async function AdminUsersPage({
                             </form>
                           )}
 
-                          {/* Change role */}
                           <form action={changeUserRole} className="flex items-center gap-2">
                             <input type="hidden" name="email" value={u.email || ''} />
                             <select name="roleCode" defaultValue={currentRole} className="border rounded-md h-8 px-2 text-xs">
@@ -245,7 +239,6 @@ export default async function AdminUsersPage({
                             <button className="h-8 px-2 border rounded-md text-xs" type="submit">Update</button>
                           </form>
 
-                          {/* Delete */}
                           <form id={`del-${u.id}`} action={deleteAuthUser}>
                             <input type="hidden" name="userId" value={u.id} />
                             <DeleteAuthButton formId={`del-${u.id}`} />
@@ -267,7 +260,6 @@ export default async function AdminUsersPage({
             </table>
           </div>
 
-          {/* Pagination */}
           <div className="p-3 border-t flex justify-end items-center gap-2">
             <a
               href={`/users?page=${Math.max(1, page - 1)}${query ? `&q=${encodeURIComponent(query)}` : ''}${roleFilter && roleFilter !== 'all' ? `&role=${roleFilter}` : ''}`}
