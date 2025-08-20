@@ -1,35 +1,30 @@
 // src/lib/supabase/admin.ts
-import 'server-only'; // ❗️akan error kalau file ini di-import dari client
-
+import 'server-only';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-// import type { Database } from '@/types/supabase'; // kalau kamu punya tipe DB, aktifkan ini
 
-let _admin: SupabaseClient /* <Database> */ | undefined;
+let _admin: SupabaseClient | undefined;
 
-export function supabaseAdmin() {
-  // ENV fallback, jangan pakai non-null assertion (!)
+export function supabaseAdmin(): SupabaseClient {
   const url =
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.SUPABASE_URL; // jaga-jaga kalau penamaan lama
+    process.env.NEXT_PUBLIC_SUPABASE_URL ??
+    process.env.SUPABASE_URL; // fallback nama lama jika ada
 
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // ✅ utamakan SUPABASE_SERVICE_ROLE (sesuai env di Vercel), fallback ke *_KEY jika kamu masih punya lokal lama
+  const serviceKey =
+    process.env.SUPABASE_SERVICE_ROLE ??
+    process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !serviceKey) {
     throw new Error(
-      'Missing Supabase env for admin: SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY'
+      'Missing Supabase admin envs: NEXT_PUBLIC_SUPABASE_URL/SUPABASE_URL dan SUPABASE_SERVICE_ROLE(_KEY).'
     );
   }
 
-  if (_admin) return _admin;
-
-  _admin = createClient(/* <Database> */ url, serviceKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-    // optional header agar gampang trace di log
-    global: { headers: { 'X-Client-Info': 'admin-server' } },
-  });
-
+  if (!_admin) {
+    _admin = createClient(url, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { 'X-Client-Info': 'admin-server' } },
+    });
+  }
   return _admin;
 }
