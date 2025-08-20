@@ -1,0 +1,318 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { z } from 'zod';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm, useFieldArray, useWatch } from 'react-hook-form';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
+
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import Breadcrumbs from '@/components/layout/Breadcrumbs';
+
+/* =========================
+   Schema
+========================= */
+const itemSchema = z.object({
+  description: z.string().min(1, 'Required'),
+  qty: z.coerce.number().positive('Qty must be > 0'),
+  unit: z.string().optional().or(z.literal('')),
+  unit_price: z.coerce.number().min(0, '>= 0'),
+});
+
+const schema = z.object({
+  po_number: z.string().min(1, 'Required'),
+  vendor_id: z.coerce.number().min(1, 'Vendor is required'),
+  po_date: z.string().optional().or(z.literal('')),
+  delivery_date: z.string().optional().or(z.literal('')),
+  is_tax_included: z.coerce.boolean(),
+  tax_percent: z.coerce.number().default(11),
+  note: z.string().optional().or(z.literal('')),
+  items: z.array(itemSchema).min(1, 'Add at least one item'),
+});
+type FormVals = z.infer<typeof schema>;
+
+type VendorRow = {
+  id: number;
+  name: string;
+  payment_type?: 'CBD' | 'COD' | 'NET' | string | null;
+  term_days?: number | null;
+  payment_term_label?: string | null;
+};
+
+/* helpers */
+function FieldError({ msg }: { msg?: string }) {
+  if (!msg) return null;
+  return <p className="text-xs text-red-600 mt-1">{msg}</p>;
+}
+const asNum = (v: unknown) => {
+  const n = typeof v === 'string' ? parseFloat(v) : Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+const addDays = (iso: string, days: number) => {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '';
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + (Number.isFinite(days) ? days : 0));
+  return d.toISOString().slice(0, 10);
+};
+
+export default function NewPOClient() {
+  const router = useRouter();
+  const [vendors, setVendors] = useState<VendorRow[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`/api/vendors?q=&limit=200`, { cache: 'no-store' });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || 'Failed load vendors');
+        const rows = body.rows as any[];
+        setVendors(rows.map(v => ({
+          id: v.id,
+          name: v.name,
+          payment_type: v.payment_type ?? null,
+          term_days: v.term_days ?? null,
+          payment_term_label: v.payment_term_label ?? null,
+        })));
+      } catch (e: any) {
+        toast.error(e.message || 'Failed load vendors');
+      }
+    })();
+  }, []);
+
+  /* =========================
+     Form
+  ========================= */
+  const form = useForm<FormVals>({
+    resolver: zodResolver(schema),
+    defaultValues: {
+      po_number: '',
+      vendor_id: undefined as unknown as number,
+      po_date: new Date().toISOString().slice(0, 10),
+      delivery_date: '',
+      is_tax_included: true,
+      tax_percent: 11,
+      note: '',
+      items: [{ description: '', qty: 1, unit: 'pcs', unit_price: 0 }],
+    },
+    mode: 'onChange',
+  });
+
+  const { fields, append, remove } = useFieldArray({ control: form.control, name: 'items' });
+
+  const watchedItems = useWatch({ control: form.control, name: 'items' }) ?? [];
+  const taxPct = useWatch({ control: form.control, name: 'tax_percent' }) ?? 0;
+  const incl = useWatch({ control: form.control, name: 'is_tax_included' }) ?? true;
+  const vendorId = useWatch({ control: form.control, name: 'vendor_id' });
+  const poDate = useWatch({ control: form.control, name: 'po_date' }) || '';
+
+  const vendor = useMemo(
+    () => vendors.find(v => v.id === Number(vendorId)) || null,
+    [vendors, vendorId]
+  );
+
+  const paymentTermLabel = useMemo(() => {
+    if (!vendor) return '—';
+    if (vendor.payment_term_label) return vendor.payment_term_label;
+    if (!vendor.payment_type) return '—';
+    if (vendor.payment_type === 'NET') {
+      const days = Number(vendor.term_days ?? 0);
+      return days > 0 ? `NET ${days} days` : 'NET';
+    }
+    return vendor.payment_type; // CBD / COD
+  }, [vendor]);
+
+  const dueDateEffective = useMemo(() => {
+    if (!vendor || !poDate) return '';
+    const t = (vendor.payment_type || '').toUpperCase();
+    if (t === 'NET') return addDays(poDate, Number(vendor.term_days ?? 0));
+    if (t === 'COD') return poDate;
+    if (t === 'CBD') return '';
+    return '';
+  }, [vendor, poDate]);
+
+  const subtotal = watchedItems.reduce((sum: number, it: any) => {
+    return sum + asNum(it?.qty) * asNum(it?.unit_price);
+  }, 0);
+  const total = incl ? subtotal : subtotal * (1 + asNum(taxPct) / 100);
+
+  async function onSubmit(values: FormVals) {
+    try {
+      const res = await fetch('/api/purchase-orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(values),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'Failed to create PO');
+      toast.success('Purchase Order created');
+      router.push('/purchase-orders');
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to create PO');
+    }
+  }
+
+  return (
+    <div className="max-w-5xl space-y-4">
+      <Breadcrumbs
+        className="mb-2"
+        items={[
+          { label: 'Dashboard', href: '/dashboard/overview' },
+          { label: 'Purchase Orders', href: '/purchase-orders' },
+          { label: 'New', current: true },
+        ]}
+      />
+      <h1 className="text-2xl font-semibold">New Purchase Order</h1>
+      <p className="text-sm text-muted-foreground">Create a new PO and add items</p>
+
+      <Card>
+        <CardHeader><CardTitle>PO Information</CardTitle></CardHeader>
+        <Separator />
+        <form onSubmit={form.handleSubmit(onSubmit)}>
+          <CardContent className="grid gap-6 md:grid-cols-2 pb-6">
+            <div>
+              <Label htmlFor="po_number">PO Number *</Label>
+              <Input id="po_number" {...form.register('po_number')} />
+              <FieldError msg={form.formState.errors.po_number?.message} />
+            </div>
+
+            <div>
+              <Label htmlFor="vendor_id">Vendor *</Label>
+              <select
+                id="vendor_id"
+                className="mt-2 block w-full rounded-md border px-3 py-2 text-sm bg-background"
+                {...form.register('vendor_id', { valueAsNumber: true })}
+                defaultValue=""
+              >
+                <option value="" disabled>Choose vendor…</option>
+                {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+              <FieldError msg={form.formState.errors.vendor_id?.message as any} />
+            </div>
+
+            <div>
+              <Label htmlFor="po_date">PO Date</Label>
+              <Input id="po_date" type="date" {...form.register('po_date')} />
+            </div>
+
+            <div>
+              <Label htmlFor="delivery_date">Delivery Date</Label>
+              <Input id="delivery_date" type="date" {...form.register('delivery_date')} />
+            </div>
+
+            <div>
+              <Label htmlFor="is_tax_included">Tax Included?</Label>
+              <select
+                id="is_tax_included"
+                className="mt-2 block w-full rounded-md border px-3 py-2 text-sm bg-background"
+                {...form.register('is_tax_included', {
+                  setValueAs: (v) => v === 'true' || v === true,
+                })}
+                defaultValue="true"
+              >
+                <option value="true">Yes (prices include tax)</option>
+                <option value="false">No (tax added on top)</option>
+              </select>
+            </div>
+
+            <div>
+              <Label htmlFor="tax_percent">Tax %</Label>
+              <Input
+                id="tax_percent"
+                type="number"
+                step="0.01"
+                {...form.register('tax_percent', { valueAsNumber: true })}
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <Label htmlFor="note">Note</Label>
+              <Input id="note" {...form.register('note')} />
+            </div>
+
+            <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+              <div>
+                <div className="text-sm text-muted-foreground">Payment Term (Vendor)</div>
+                <div className="font-medium">{paymentTermLabel}</div>
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">Due Date (effective)</div>
+                <div className="font-medium">{dueDateEffective || '—'}</div>
+              </div>
+            </div>
+          </CardContent>
+
+          <Separator />
+
+          <CardHeader><CardTitle>Items</CardTitle></CardHeader>
+          <CardContent className="pb-6">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[40%]">Description</TableHead>
+                  <TableHead className="w-[10%] text-right">Qty</TableHead>
+                  <TableHead className="w-[15%]">Unit</TableHead>
+                  <TableHead className="w-[15%] text-right">Unit Price</TableHead>
+                  <TableHead className="w-[15%] text-right">Amount</TableHead>
+                  <TableHead className="w-[5%]" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {fields.map((field, idx) => {
+                  const row = watchedItems[idx] ?? {};
+                  const amount = asNum(row.qty) * asNum(row.unit_price);
+                  return (
+                    <TableRow key={field.id}>
+                      <TableCell>
+                        <Input placeholder="Item description" {...form.register(`items.${idx}.description` as const)} />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Input type="number" min={0} step="1" {...form.register(`items.${idx}.qty` as const, { valueAsNumber: true })} />
+                      </TableCell>
+                      <TableCell>
+                        <Input placeholder="pcs" {...form.register(`items.${idx}.unit` as const)} />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Input type="number" min={0} step="0.01" {...form.register(`items.${idx}.unit_price` as const, { valueAsNumber: true })} />
+                      </TableCell>
+                      <TableCell className="text-right font-medium">{amount.toLocaleString('id-ID')}</TableCell>
+                      <TableCell className="text-right">
+                        <Button type="button" variant="ghost" onClick={() => remove(idx)}>Remove</Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+
+            <div className="mt-3">
+              <Button type="button" variant="outline" onClick={() => append({ description: '', qty: 1, unit: 'pcs', unit_price: 0 })}>
+                + Add Item
+              </Button>
+            </div>
+
+            <div className="mt-6 flex flex-col items-end gap-1 text-sm">
+              <div className="w-full sm:w-80 flex justify-between"><span>Subtotal</span><span>{subtotal.toLocaleString('id-ID')}</span></div>
+              <div className="w-full sm:w-80 flex justify-between text-muted-foreground">
+                <span>Tax {asNum(taxPct)}% {incl ? '(included)' : ''}</span>
+                <span>{incl ? '—' : (subtotal * (asNum(taxPct) / 100)).toLocaleString('id-ID')}</span>
+              </div>
+              <div className="w-full sm:w-80 flex justify-between font-semibold text-base"><span>Total</span><span>{total.toLocaleString('id-ID')}</span></div>
+            </div>
+          </CardContent>
+
+          <Separator />
+          <CardFooter className="justify-end gap-2 mt-4 pb-6">
+            <Button type="button" variant="outline" onClick={() => router.back()}>Cancel</Button>
+            <Button type="submit" disabled={form.formState.isSubmitting}>{form.formState.isSubmitting ? 'Saving…' : 'Save PO'}</Button>
+          </CardFooter>
+        </form>
+      </Card>
+    </div>
+  );
+}
