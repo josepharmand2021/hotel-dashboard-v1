@@ -139,14 +139,6 @@ export default function AppSidebar({
     const out: NavGroup[] = [];
 
     for (const g of BASE_NAV) {
-      // Hide Settings untuk viewer; tambah Security utk super
-      if (g.key === 'settings') {
-        if (!isAdmin) continue;
-        const items = [...(g.items ?? [])];
-        if (isSuper) items.unshift({ label: 'Security', href: '/settings/security' });
-        out.push({ ...g, items });
-        continue;
-      }
 
       // Filter item "New" pada Purchase Orders untuk viewer
       if (g.key === 'purchase-orders') {

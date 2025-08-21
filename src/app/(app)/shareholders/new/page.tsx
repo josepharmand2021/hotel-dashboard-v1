@@ -38,7 +38,7 @@ export default function NewShareholderPage() {
         active,
       });
       toast.success("Shareholder dibuat");
-      router.push(`/dashboard/finance/shareholders/${id}/edit`);
+      router.push(`/shareholders/`);
     } catch (e: any) {
       toast.error(e.message || "Gagal menyimpan");
     } finally {
