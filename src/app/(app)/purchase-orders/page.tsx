@@ -36,7 +36,7 @@ type Row = {
   term_days?: number | null;
   amount_paid?: number;
   balance_due?: number;
-  payment_status?: 'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
+  payment_status?: 'UNBILLED'|'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
   is_overdue?: boolean;
   days_overdue?: number;
 };
@@ -232,7 +232,7 @@ export default function PurchaseOrdersListPage() {
                     <div className="leading-tight">Balance: <b>Rp {fmtID.format(balance)}</b></div>
                   </div>
                   <PaymentStatusBadge
-                    status={(po.payment_status ?? 'UNPAID') as any}
+                    status={(po.payment_status ?? 'UNBILLED') as any}
                     daysOverdue={po.days_overdue ?? 0}
                   />
                 </div>

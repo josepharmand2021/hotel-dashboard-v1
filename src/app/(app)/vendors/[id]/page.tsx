@@ -1,33 +1,39 @@
-// src/app/(app)/vendors/[id]/page.tsx
 export const runtime = 'nodejs';
 
 import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { getVendor } from '@/features/vendors/api';
+import { getVendorServer } from '@/features/vendors/api.server';  // ⬅️ ini yang penting
+import { RoleGate } from '@/lib/supabase/acl';
 
-async function VendorDetailActions({ id }: { id: number }) {
-  // server component – delete via action route or client dialog? We'll keep to link for edit.
-  return (
-    <div className="flex gap-2">
-      <Button asChild variant="outline">
-        <Link href={`/vendors/${id}/edit`}>Edit</Link>
-      </Button>
-      {/* For delete, handle in a client subcomponent if you want confirmation */}
-    </div>
-  );
+function termLabel(v: {
+  payment_type: 'CBD'|'COD'|'NET';
+  term_days: number | null;
+  payment_term_label: string | null;
+}) {
+  if (v.payment_term_label?.trim()) return v.payment_term_label!;
+  if (v.payment_type === 'NET') {
+    const d = Number(v.term_days || 0);
+    return d > 0 ? `NET ${d} days` : 'NET';
+  }
+  return v.payment_type || '—';
 }
 
 export default async function VendorDetail({
   params,
-}: {
-  // ✅ Next.js 15 expects Promise here
-  params: Promise<{ id: string }>;
-}) {
+}: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const v = await getVendor(Number(id));
+
+  let v;
+  try {
+    v = await getVendorServer(Number(id));
+  } catch {
+    // kalau tidak ketemu (single() error “PGRST116 No rows”) → 404
+    return notFound();
+  }
 
   return (
     <div className="max-w-3xl space-y-4">
@@ -36,23 +42,21 @@ export default async function VendorDetail({
           <h1 className="text-2xl font-semibold">{v.name}</h1>
           <p className="text-sm text-muted-foreground">Supplier detail</p>
         </div>
-        <VendorDetailActions id={v.id} />
+        <RoleGate admin>
+          <Button asChild variant="outline">
+            <Link href={`/vendors/${v.id}/edit`}>Edit</Link>
+          </Button>
+        </RoleGate>
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Information</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Information</CardTitle></CardHeader>
         <Separator />
         <CardContent className="grid gap-4 md:grid-cols-2">
-          <div>
-            <div className="text-xs text-muted-foreground">Email</div>
-            <div>{v.email || '—'}</div>
-          </div>
-          <div>
-            <div className="text-xs text-muted-foreground">Phone</div>
-            <div>{v.phone || '—'}</div>
-          </div>
+          <div><div className="text-xs text-muted-foreground">Email</div><div>{v.email || '—'}</div></div>
+          <div><div className="text-xs text-muted-foreground">Phone</div><div>{v.phone || '—'}</div></div>
+          <div><div className="text-xs text-muted-foreground">NPWP</div><div>{v.npwp || '—'}</div></div>
+          <div><div className="text-xs text-muted-foreground">Payment Term</div><Badge variant="outline">{termLabel(v)}</Badge></div>
           <div className="md:col-span-2">
             <div className="text-xs text-muted-foreground">Address</div>
             <div className="whitespace-pre-wrap">{v.address || '—'}</div>
