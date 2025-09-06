@@ -41,6 +41,7 @@ export type ContributionRow = {
   bank_account_id: number | null;
   deposit_tx_ref: string | null;
   note: string | null;
+    status?: string;                // default: 'posted'
 
   // optional denormalized fields
   shareholder_name?: string;
@@ -79,3 +80,21 @@ export type OverallPlanSummary = {
   closed_count: number;
   total_periods: number;
 };
+
+export type CapitalInjection = {
+  id: number;
+  period: string;                   // "YYYY-MM"
+  target_total: number;
+  status: 'draft' | 'active' | 'closed' | string;
+  note: string | null;
+};
+
+export type ShareholderProgress = {
+  shareholder_id: number;
+  shareholder_name: string;
+  ownership_percent: number;        // bisa 0 kalau tidak ada di DB
+  obligation: number;
+  paid: number;
+  remaining: number;
+};
+
