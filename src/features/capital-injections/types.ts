@@ -7,6 +7,7 @@ export type PeriodSummary = {
   period: string;              // e.g. "2025-08"
   target_total: number;
   total_paid: number;
+  
   outstanding: number;
   status: "draft" | "active" | "closed" | string; // <== baru
 

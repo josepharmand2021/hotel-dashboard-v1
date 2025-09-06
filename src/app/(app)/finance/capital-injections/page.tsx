@@ -140,7 +140,6 @@ function PeriodRow({
       <TableRow className="cursor-pointer hover:bg-muted/50" onClick={load}>
         <TableCell className="font-medium">{p.period}</TableCell>
         <TableCell className="text-right">{fmtIDR(p.target_total)}</TableCell>
-        <TableCell className="text-right">{fmtIDR(p.total_due)}</TableCell>
         <TableCell className="text-right">{fmtIDR(p.total_paid)}</TableCell>
         <TableCell className="text-right">{fmtIDR(p.outstanding)}</TableCell>
 
