@@ -1,17 +1,21 @@
 // src/app/(app)/payables/[id]/page.tsx
-import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
+import { notFound, redirect } from 'next/navigation';
 import { supabaseServer } from '@/lib/supabase/server';
 import { getPayableById, payPayable } from '../actions';
 
-// 🔽 tambahkan dua import ini
+// panels & roles
 import AttachmentPanelPayable from '@/app/api/docs/components/AttachmentPanelPayable';
 import { getRoleFlagsServer } from '@/lib/roles';
+
+// Pastikan page ini berjalan di Node.js runtime (aman untuk supabase server client)
+export const runtime = 'nodejs';
 
 function fmtIDR(n: number | string | null | undefined) {
   const v = typeof n === 'string' ? parseFloat(n) : (n ?? 0);
   return new Intl.NumberFormat('id-ID').format(v as number);
 }
+
 function StatusBadge({ s }: { s: string }) {
   const cls =
     s === 'paid'
@@ -22,17 +26,14 @@ function StatusBadge({ s }: { s: string }) {
   return <span className={`px-2 py-0.5 rounded text-xs ${cls}`}>{s.toUpperCase()}</span>;
 }
 
-export default async function Page({
-  params,
-}: {
-  params: { id: string } | Promise<{ id: string }>;
-}) {
-  const p = (await params) as { id: string };
-  const id = Number(p.id || 0);
+// ✅ Next.js 15: params adalah Promise — jangan pakai union type
+export default async function Page(props: { params: Promise<{ id: string }> }) {
+  const { id: idStr } = await props.params;
+  const id = Number(idStr || 0);
   if (!id) notFound();
 
   // -- Ambil payable utama
-  const payable = await getPayableById(id).catch(() => null);
+  const payable = await getPayableById(id).catch(() => null as any);
   if (!payable) notFound();
 
   // -- Ambil PO number & nama vendor (opsional)
@@ -58,10 +59,7 @@ export default async function Page({
   async function payAction(fd: FormData) {
     'use server';
     const expenseDate = String(fd.get('expense_date') || new Date().toISOString().slice(0, 10));
-    const source = (fd.get('source') ? String(fd.get('source')) : (payable.source || 'PT')) as
-      | 'PT'
-      | 'RAB'
-      | 'Petty';
+    const source = (fd.get('source') ? String(fd.get('source')) : (payable.source || 'PT')) as 'PT' | 'RAB' | 'Petty';
     const accountId = fd.get('account_id') ? Number(fd.get('account_id')) : null;
     const cashboxId = fd.get('cashbox_id') ? Number(fd.get('cashbox_id')) : null;
     const note = String(fd.get('note') || '');
@@ -137,8 +135,7 @@ export default async function Page({
             <span className="text-slate-500">Due Date:</span> {payable.due_date ?? '—'}
           </div>
           <div>
-            <span className="text-slate-500">Term:</span> {payable.term_no ?? '—'} ({payable.term_percent ?? '—'}
-            %)
+            <span className="text-slate-500">Term:</span> {payable.term_no ?? '—'} ({payable.term_percent ?? '—'}%)
           </div>
         </div>
         <div className="border rounded p-3 space-y-1 text-sm">
@@ -149,8 +146,7 @@ export default async function Page({
             <span className="text-slate-500">Tanggal FP:</span> {payable.tax_invoice_date ?? '—'}
           </div>
           <div>
-            <span className="text-slate-500">PPN creditable:</span>{' '}
-            {String(payable.is_ppn_creditable ?? false).toUpperCase()}
+            <span className="text-slate-500">PPN creditable:</span> {String(payable.is_ppn_creditable ?? false).toUpperCase()}
           </div>
           <div>
             <span className="text-slate-500">Catatan:</span> {payable.note ?? '—'}
@@ -163,51 +159,7 @@ export default async function Page({
         <AttachmentPanelPayable payableId={id} role={role} />
       </div>
 
-      {/* PAY FORM
-      {payable.status === 'unpaid' && (
-        <div className="border rounded p-4 space-y-3">
-          <div className="font-medium">Pay this invoice</div>
-          <form action={payAction} className="grid sm:grid-cols-4 gap-3 text-sm">
-            <input type="hidden" name="source" defaultValue={payable.source ?? 'PT'} />
-
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-600">Expense Date</label>
-              <input
-                name="expense_date"
-                type="date"
-                defaultValue={new Date().toISOString().slice(0, 10)}
-                className="border rounded px-2 py-1"
-                required
-              />
-            </div> */}
-
-            {/* combobox account -> hidden input 'account_id' */}
-            {/* <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-600">Account (optional)</label> */}
-              {/* ganti dengan komponenmu bila perlu */}
-              {/* <input name="account_id" type="number" className="border rounded px-2 py-1" />
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-600">Cashbox ID (optional)</label>
-              <input name="cashbox_id" type="number" className="border rounded px-2 py-1" />
-            </div>
-
-            <div className="flex flex-col gap-1 sm:col-span-4">
-              <label className="text-xs text-slate-600">Notes (optional)</label>
-              <textarea name="note" rows={2} className="border rounded px-2 py-1" />
-            </div>
-
-            <div className="sm:col-span-4">
-              <button type="submit" className="px-4 py-2 rounded bg-black text-white">
-                Pay Now
-              </button>
-            </div>
-          </form>
-        </div> */}
-      {/* )} */}
-
-      {/* Expense yang tercatat */}
+      {/* Payment (bila sudah tercatat) */}
       {exp && exp.length > 0 && (
         <div className="border rounded">
           <div className="px-3 py-2 border-b font-medium">Payment</div>
