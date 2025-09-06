@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 
 import PaymentsCard from '@/features/purchase-orders/PaymentsCard';
 import PaymentStatusBadge from '@/features/purchase-orders/PaymentStatusBadge';
-import PayFromPODialog from '@/features/purchase-orders/PayFromPODialog';
+// import PayFromPODialog from '@/features/purchase-orders/PayFromPODialog';
 
 // ✅ Komponen client harus pakai API client
 import { getPurchaseOrder, deletePurchaseOrder } from '@/features/purchase-orders/api';
@@ -289,7 +289,7 @@ export default function PurchaseOrderDetailPage() {
       />
 
       {/* Pay dialog (hanya dibuka kalau write=true) */}
-      <PayFromPODialog
+      {/* <PayFromPODialog
         open={payOpen}
         onOpenChange={setPayOpen}
         po={{
@@ -310,7 +310,7 @@ export default function PurchaseOrderDetailPage() {
             toast.error(e?.message || 'Failed to refresh PO');
           }
         }}
-      />
+      /> */}
     </div>
   );
 }
