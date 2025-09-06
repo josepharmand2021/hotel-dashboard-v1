@@ -27,7 +27,6 @@ type NavGroup = {
   href?: string;
   items?: NavLink[];
 };
-
 const BASE_NAV: NavGroup[] = [
   { key: 'dashboard', label: 'Overview', icon: LayoutDashboard, href: '/dashboard/overview' },
   {
@@ -36,7 +35,7 @@ const BASE_NAV: NavGroup[] = [
     icon: FileText,
     items: [
       { label: 'List', href: '/purchase-orders' },
-      { label: 'New', href: '/purchase-orders/new' }, // ← akan difilter utk viewer
+      { label: 'New', href: '/purchase-orders/new' },
     ],
   },
   {
@@ -51,6 +50,8 @@ const BASE_NAV: NavGroup[] = [
     icon: Wallet,
     items: [
       { label: 'Capital Injections', href: '/finance/capital-injections' },
+      { label: 'Saham Shareholders', href: '/finance/capital-injections/shareholders' },          // ⬅️ tambahkan ini
+      { label: 'Payables', href: '/payables' },          // ⬅️ tambahkan ini
       { label: 'Expenses', href: '/finance/expenses' },
       { label: 'Petty Cash', href: '/finance/petty-cash' },
       { label: 'RAB Allocations', href: '/finance/rab-allocations' },

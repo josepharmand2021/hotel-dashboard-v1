@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { ExpenseTable } from '@/components/ExpenseTable';
+import { useSearchParams } from 'next/navigation';
+import { ExpenseTable } from '@/components/ExpenseTable'; // ⬅️ pakai komponen yang benar
 import { listExpenses, listCategories, listSubcategories, listActiveShareholders } from '@/features/expenses/api';
 import type { Category, Subcategory, Shareholder } from '@/features/expenses/api';
 import type { ExpenseListItem } from '@/features/expenses/types';
@@ -18,7 +18,6 @@ const pageSizes = [10, 20, 50, 100];
 const fmtID = new Intl.NumberFormat('id-ID');
 
 export default function ExpensesListClient({ canWrite }: { canWrite: boolean }) {
-  const router = useRouter();
   const sp = useSearchParams();
 
   const [month, setMonth] = useState<string>(sp.get('month') || '');
@@ -268,7 +267,7 @@ export default function ExpensesListClient({ canWrite }: { canWrite: boolean }) 
                   period: false,
                   po: true,
                 }}
-                onRowClick={canWrite ? (r) => router.push(`/finance/expenses/${r.id}`) : undefined}
+                // ⬇ jangan kirim onRowClick lagi
               />
             </div>
           </div>

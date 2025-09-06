@@ -11,7 +11,6 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/componen
 import { Separator } from '@/components/ui/separator';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-
 import {
   Form as UIForm,
   FormField,
@@ -21,27 +20,73 @@ import {
   FormMessage,
   FormDescription,
 } from '@/components/ui/form';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 
 const schema = z.object({
   name: z.string().min(2, 'Minimal 2 karakter'),
-  email: z.string().email('Format email tidak valid').optional().or(z.literal('')),
+  email: z
+    .string()
+    .email('Format email tidak valid')
+    .optional()
+    .or(z.literal('')),
   phone: z.string().optional().or(z.literal('')),
   address: z.string().optional().or(z.literal('')),
-});
+  npwp: z.string().optional().or(z.literal('')),
+
+  payment_type: z.enum(['CBD', 'COD', 'NET']).default('CBD'),
+  term_days: z
+    .union([z.coerce.number().int().min(0, 'Harus ≥ 0'), z.null()])
+    .optional(),
+}).refine(
+  (v) => (v.payment_type === 'NET' ? Number(v.term_days ?? 0) >= 0 : true),
+  { path: ['term_days'], message: 'Isi term days untuk NET (boleh 0).' }
+);
+
 type FormVals = z.infer<typeof schema>;
 
 export default function NewVendorPage() {
   const router = useRouter();
+
   const form = useForm<FormVals>({
     resolver: zodResolver(schema),
-    defaultValues: { name: '', email: '', phone: '', address: '' },
+    defaultValues: {
+      name: '',
+      email: '',
+      phone: '',
+      address: '',
+      npwp: '',
+      payment_type: 'CBD',
+      term_days: 0,
+    },
     mode: 'onChange',
   });
+
+  const payType = form.watch('payment_type');
+
+  function paymentLabel(type: 'CBD' | 'COD' | 'NET', term?: number | null) {
+    if (type === 'NET') {
+      const d = Number(term ?? 0);
+      return d > 0 ? `NET ${d} days` : 'NET';
+    }
+    return type;
+  }
 
   async function onSubmit(values: FormVals) {
     try {
       const { createVendor } = await import('@/features/vendors/api');
-      await createVendor(values);
+
+      const payload = {
+        name: values.name,
+        email: values.email || null,
+        phone: values.phone || null,
+        address: values.address || null,
+        npwp: values.npwp || null,
+        payment_type: values.payment_type,
+        term_days: values.payment_type === 'NET' ? Number(values.term_days ?? 0) : null,
+        payment_term_label: paymentLabel(values.payment_type, Number(values.term_days ?? 0)),
+      } as const;
+
+      await createVendor(payload as any);
       toast.success('Vendor created');
       router.push('/vendors');
     } catch (e: any) {
@@ -66,6 +111,7 @@ export default function NewVendorPage() {
         <UIForm {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)}>
             <CardContent className="grid gap-6 md:grid-cols-2 pb-6">
+              {/* Name */}
               <FormField
                 control={form.control}
                 name="name"
@@ -78,6 +124,7 @@ export default function NewVendorPage() {
                 )}
               />
 
+              {/* Phone */}
               <FormField
                 control={form.control}
                 name="phone"
@@ -90,6 +137,7 @@ export default function NewVendorPage() {
                 )}
               />
 
+              {/* Email */}
               <FormField
                 control={form.control}
                 name="email"
@@ -102,6 +150,20 @@ export default function NewVendorPage() {
                 )}
               />
 
+              {/* NPWP */}
+              <FormField
+                control={form.control}
+                name="npwp"
+                render={({ field }) => (
+                  <FormItem className="md:col-span-2">
+                    <FormLabel>NPWP</FormLabel>
+                    <FormControl><Input placeholder="xx.xxx.xxx.x-xxx.xxx" {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {/* Address */}
               <FormField
                 control={form.control}
                 name="address"
@@ -113,17 +175,79 @@ export default function NewVendorPage() {
                   </FormItem>
                 )}
               />
+
+              {/* Payment Type */}
+              <FormField
+                control={form.control}
+                name="payment_type"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Payment Type</FormLabel>
+                    <FormControl>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger><SelectValue placeholder="Pilih tipe" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="CBD">CBD (Cash Before Delivery)</SelectItem>
+                          <SelectItem value="COD">COD (Cash On Delivery)</SelectItem>
+                          <SelectItem value="NET">NET (Kredit)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </FormControl>
+                    <FormDescription>Pilih cara bayar default vendor.</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+
+<FormField
+  control={form.control}
+  name="term_days"
+  render={({ field }) => (
+    <FormItem>
+      <FormLabel>Term (days)</FormLabel>
+      <FormControl>
+        <Input
+          type="number"
+          min={0}
+          disabled={payType !== 'NET'}
+          placeholder={payType === 'NET' ? 'contoh: 30' : '—'}
+          // ⬇️ Perbaikan penting:
+          value={field.value ?? ''}                              // null -> '' (string kosong)
+          onChange={(e) => {
+            const v = e.target.value.trim();
+            field.onChange(v === '' ? null : Number(v));         // string -> number | null
+          }}
+          onBlur={field.onBlur}
+          name={field.name}
+          ref={field.ref}
+        />
+      </FormControl>
+
+      <FormDescription>
+        {payType === 'NET'
+          ? (() => {
+              const d = Number(field.value ?? 0);
+              return d > 0 ? `Label otomatis: NET ${d} days` : 'Label otomatis: NET';
+            })()
+          : 'Tidak berlaku untuk CBD/COD'}
+      </FormDescription>
+      <FormMessage />
+    </FormItem>
+  )}
+/>
+
             </CardContent>
+
             <Separator />
             <CardFooter className="justify-end gap-2 pb-6 mt-4">
-            <Button type="button" variant="outline" onClick={() => router.back()}>
+              <Button type="button" variant="outline" onClick={() => router.back()}>
                 Cancel
-            </Button>
-            <Button type="submit" disabled={form.formState.isSubmitting}>
+              </Button>
+              <Button type="submit" disabled={form.formState.isSubmitting}>
                 {form.formState.isSubmitting ? 'Saving…' : 'Save'}
-            </Button>
+              </Button>
             </CardFooter>
-
           </form>
         </UIForm>
       </Card>

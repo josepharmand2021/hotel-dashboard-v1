@@ -1,5 +1,5 @@
 // src/features/purchase-orders/payment.ts
-export type PaymentStatus = 'PAID' | 'PARTIAL' | 'UNPAID' | 'OVERDUE';
+export type PaymentStatus = 'UNBILLED' | 'PAID' | 'PARTIAL' | 'UNPAID' | 'OVERDUE';
 
 type Item = { qty?: number; unit_price?: number; amount?: number };
 export type POShape = {
@@ -9,12 +9,7 @@ export type POShape = {
   is_tax_included?: boolean | null;
   tax_percent?: number | null;
 
-  // berbagai kemungkinan kolom "paid" di backend
-  total_paid?: number | null;
-  paid_amount?: number | null;
-  payments_total?: number | null;
-  expenses_total?: number | null;
-
+  // kolom2 PO untuk fallback due-date (kalau belum ada payable)
   po_date?: string | null;
   delivery_date?: string | null;
   term_code?: string | null;   // 'CBD' | 'COD' | 'NET'
@@ -22,6 +17,7 @@ export type POShape = {
   due_date_override?: string | null;
 };
 
+// ===== Helper for due-date (fallback tanpa payable) =====
 const asNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 function computeFormulaDue(po: POShape) {
@@ -39,45 +35,75 @@ export function computeEffectiveDue(po: POShape) {
   return po.due_date_override || computeFormulaDue(po) || '';
 }
 
-export function summarizePayment(po: POShape, now = new Date()) {
-  const subtotal =
-    po.subtotal != null
-      ? asNum(po.subtotal)
-      : (po.items || []).reduce(
-          (s, it) => s + asNum(it.amount ?? asNum(it.qty) * asNum(it.unit_price)),
-          0
-        );
+// ====== Payment summary BERDASARKAN PAYABLES ======
+export type PayableMini = {
+  id: number;
+  po_id: number;
+  amount: number;     // gross invoice
+  status: 'unpaid' | 'paid' | 'void';
+  due_date: string | null;
+};
 
-  const taxPct = asNum(po.tax_percent);
-  const total =
-    po.total != null
-      ? asNum(po.total)
-      : (po.is_tax_included ? subtotal : subtotal * (1 + taxPct / 100));
+export type PostedByPayable = Record<number, number>; // payable_id -> total posted expense
 
-  const paid = Math.max(
-    asNum(po.total_paid),
-    asNum(po.paid_amount),
-    asNum(po.payments_total),
-    asNum(po.expenses_total),
-    0
-  );
+export type PoPaymentSummary = {
+  total: number;            // total invoice (sum payables.amount)
+  paid: number;             // total posted expense
+  balance: number;          // total - paid
+  status: PaymentStatus;    // UNBILLED/UNPAID/PARTIAL/PAID/OVERDUE
+  anyOverdueUnpaid: boolean;
+  daysOverdue?: number;     // max overdue days among unpaid payables
+};
+
+export function summarizePoPaymentFromPayables(
+  payables: PayableMini[],
+  postedByPayable?: PostedByPayable,
+  now = new Date(),
+): PoPaymentSummary {
+  const active = (payables || []).filter(p => p.status !== 'void');
+
+  // belum ada payable sama sekali => UNBILLED
+  if (active.length === 0) {
+    return { total: 0, paid: 0, balance: 0, status: 'UNBILLED', anyOverdueUnpaid: false };
+  }
+
+  const total = active.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
+  const paid = active.reduce((s, p) => {
+    const posted = postedByPayable
+      ? Number(postedByPayable[p.id] || 0)
+      : (p.status === 'paid' ? Number(p.amount) || 0 : 0);
+    return s + Math.min(Number(p.amount) || 0, posted);
+  }, 0);
 
   const balance = Math.max(total - paid, 0);
 
-  const effectiveDue = computeEffectiveDue(po);
-  let overdueDays = 0;
-  if (effectiveDue && balance > 0) {
-    const today = new Date(now); today.setHours(0,0,0,0);
-    const due = new Date(effectiveDue); due.setHours(0,0,0,0);
+  // overdue: ada payable yang masih kurang bayar & due < today
+  const today = new Date(now); today.setHours(0,0,0,0);
+  let anyOverdueUnpaid = false;
+  let maxOverdueDays = 0;
+
+  for (const p of active) {
+    const posted = postedByPayable
+      ? Number(postedByPayable[p.id] || 0)
+      : (p.status === 'paid' ? Number(p.amount) || 0 : 0);
+    const stillOwes = posted < (Number(p.amount) || 0);
+    if (!stillOwes) continue;
+    if (!p.due_date) continue;
+
+    const due = new Date(p.due_date); due.setHours(0,0,0,0);
     const diff = Math.ceil((today.getTime() - due.getTime()) / 86400000);
-    overdueDays = diff > 0 ? diff : 0;
+    if (diff > 0) {
+      anyOverdueUnpaid = true;
+      if (diff > maxOverdueDays) maxOverdueDays = diff;
+    }
   }
 
   let status: PaymentStatus;
   if (paid >= total - 0.5) status = 'PAID';
   else if (paid > 0) status = 'PARTIAL';
   else status = 'UNPAID';
-  if (status !== 'PAID' && overdueDays > 0) status = 'OVERDUE';
+  if (status !== 'PAID' && anyOverdueUnpaid) status = 'OVERDUE';
 
-  return { subtotal, taxPct, total, paid, balance, effectiveDue, overdueDays, status };
+  return { total, paid, balance, status, anyOverdueUnpaid, daysOverdue: maxOverdueDays || undefined };
 }

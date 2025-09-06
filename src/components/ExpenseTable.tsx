@@ -3,7 +3,9 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '@/components/ui/table';
+import {
+  Table, TableHeader, TableRow, TableHead, TableBody, TableCell,
+} from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { MoreHorizontal } from 'lucide-react';
 import {
@@ -20,11 +22,19 @@ export type ExpenseTableProps = {
     source: boolean; status: boolean; shareholder: boolean;
     category: boolean; subcategory: boolean;
     vendor: boolean; invoice: boolean; note: boolean; period: boolean;
-    po: boolean; // ⬅️ NEW
+    po: boolean;
   }>;
   actions?: (row: ExpenseListItem) => React.ReactNode;
-  onRowClick?: (row: ExpenseListItem) => void;
 };
+
+// --- helper: normalisasi PO refs (mendukung po_ref & po_refs)
+function getPoRefs(r: ExpenseListItem): { id: number; po_number: string }[] {
+  if (Array.isArray(r.po_refs) && r.po_refs.length) return r.po_refs;
+  if ((r as any).po_ref?.id) {
+    return [{ id: Number((r as any).po_ref.id), po_number: String((r as any).po_ref.po_number || '') }];
+  }
+  return [];
+}
 
 export function ExpenseTable({
   rows,
@@ -32,14 +42,14 @@ export function ExpenseTable({
   show = {
     source: true, status: true, shareholder: true,
     category: true, subcategory: true, vendor: true, invoice: true,
-    note: false, period: false, po: true, // ⬅️ default tampilkan PO
+    note: false, period: false, po: true,
   },
-  actions, onRowClick,
+  actions,
 }: ExpenseTableProps) {
 
   const totalDisplayed = rows.reduce((s, r) => s + (r.amount || 0), 0);
 
-  // hitung colSpan label "Total" (semua kolom kecuali Amount & Actions)
+  // hitung colSpan label "Total" (semua kolom selain Amount & Actions)
   const totalLabelSpan =
     1 + // Date
     (show.period ? 1 : 0) +
@@ -98,51 +108,88 @@ export function ExpenseTable({
               r.status === 'posted' ? 'bg-emerald-100 text-emerald-700' :
               r.status === 'draft'  ? 'bg-amber-100 text-amber-700' :
                                       'bg-red-100 text-red-700';
+            const poRefs = getPoRefs(r);
+
             return (
-              <TableRow key={r.id} className="hover:bg-muted/40 cursor-pointer" onClick={() => onRowClick?.(r)}>
+              <TableRow key={r.id} className="hover:bg-muted/40">
                 <TableCell className="font-medium">{r.expense_date}</TableCell>
-                {show.period && <TableCell>{r.period_month.slice(0,7)}</TableCell>}
+                {show.period && <TableCell>{r.period_month ? r.period_month.slice(0,7) : '—'}</TableCell>}
                 {show.source && <TableCell>{r.source}</TableCell>}
-                {show.status && <TableCell><span className={`px-2 py-0.5 rounded text-xs ${statusColor}`}>{r.status}</span></TableCell>}
+                {show.status && (
+                  <TableCell>
+                    <span className={`px-2 py-0.5 rounded text-xs ${statusColor}`}>{r.status}</span>
+                  </TableCell>
+                )}
                 {show.shareholder && <TableCell>{r.shareholder_name ?? '—'}</TableCell>}
                 {show.category && <TableCell>{r.category_name}</TableCell>}
                 {show.subcategory && <TableCell>{r.subcategory_name}</TableCell>}
                 {show.vendor && <TableCell>{r.vendor_name ?? '—'}</TableCell>}
-                {show.invoice && <TableCell>{r.invoice_no ?? '—'}</TableCell>}
-                {show.note && <TableCell className="max-w-[280px] truncate">{r.note ?? '—'}</TableCell>}
 
-                {/* NEW: PO numbers */}
+{show.invoice && (
+  <TableCell className="max-w-[240px] truncate">
+    {r.payable_id ? (
+      <Link
+        href={`/payables/${r.payable_id}`}     // ganti ke /finance/payables/... kalau route kamu di situ
+        className="text-blue-600 hover:underline"
+        prefetch={false}
+      >
+        {r.invoice_no ?? `#${r.payable_id}`}
+      </Link>
+    ) : (
+      r.invoice_no ?? '—'
+    )}
+  </TableCell>
+)}
+
+
+                {/* PO chips */}
                 {show.po && (
                   <TableCell>
-                    {r.po_refs?.length ? (
-<div className="flex flex-wrap gap-1">
-  {r.po_refs.map((po) => (
-    <Link
-      key={`po-${po.id}`} // pakai prefix biar lebih unik
-      href={`/purchase-orders/${po.id}`}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {po.po_number}
-    </Link>
-  ))}
-</div>
-
+                    {poRefs.length ? (
+                      <div className="flex flex-wrap gap-1">
+                        {poRefs.map((po) => (
+                          <Link
+                            key={`po-${po.id}`}
+                            href={`/purchase-orders/${po.id}`}
+                            className="text-blue-600 hover:underline"
+                            prefetch={false}
+                            aria-label={`Buka PO ${po.po_number}`}
+                          >
+                            {po.po_number}
+                          </Link>
+                        ))}
+                      </div>
                     ) : '—'}
                   </TableCell>
                 )}
 
                 <TableCell className="text-right">Rp {fmtID.format(r.amount)}</TableCell>
+
+                {/* Actions */}
                 <TableCell className="text-right">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e)=>e.stopPropagation()}>
+                      <Button size="icon" variant="ghost" className="h-8 w-8">
                         <MoreHorizontal className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" onClick={(e)=>e.stopPropagation()}>
-                      {actions ? actions(r) : (
+                    <DropdownMenuContent align="end">
+                      {actions ? (
+                        actions(r)
+                      ) : (
                         <>
-                          <DropdownMenuItem asChild><Link href={`/finance/expenses/${r.id}`}>Open</Link></DropdownMenuItem>
+                          <DropdownMenuItem asChild>
+                            <Link href={`/finance/expenses/${r.id}`} prefetch={false}>
+                              Open Expense
+                            </Link>
+                          </DropdownMenuItem>
+                          {r.payable_id && (
+                            <DropdownMenuItem asChild>
+                              <Link href={`/payables/${r.payable_id}`} prefetch={false}>
+                                Open Payable
+                              </Link>
+                            </DropdownMenuItem>
+                          )}
                         </>
                       )}
                     </DropdownMenuContent>

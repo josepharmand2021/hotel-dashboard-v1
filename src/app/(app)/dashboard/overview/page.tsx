@@ -1,3 +1,4 @@
+// src/app/(app)/dashboard/page.tsx
 'use client';
 
 import { useState } from 'react';
@@ -28,7 +29,6 @@ export default function DashboardPage() {
         </TabsList>
 
         <TabsContent value="financial">
-          {/* ⬇️ Tidak pakai prop period lagi */}
           <FinancialTab refreshKey={refreshTick} />
         </TabsContent>
 

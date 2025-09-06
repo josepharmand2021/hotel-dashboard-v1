@@ -10,8 +10,15 @@ export type Vendor = { id: number; name: string };
 
 /* ========= helpers ========= */
 
-const pickOne = <T,>(v: T | T[] | null | undefined): T | null =>
-  Array.isArray(v) ? (v[0] ?? null) : (v ?? null);
+function monthToRange(month: string): { from: string; to: string } {
+  const y = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  const from = `${y}-${String(m).padStart(2, '0')}-01`;
+  const nextY = m === 12 ? y + 1 : y;
+  const nextM = m === 12 ? 1 : m + 1;
+  const to = `${nextY}-${String(nextM).padStart(2, '0')}-01`;
+  return { from, to };
+}
 
 /* ========= lookups ========= */
 
@@ -82,21 +89,34 @@ function normalizeForInsert(p: BaseExpensePayload) {
 
 export async function createExpense(payload: BaseExpensePayload): Promise<{ id: number }> {
   const body: any = normalizeForInsert(payload);
-
-  // Auto-assign bank PT saat POSTED & source PT
   if (body.source === 'PT' && body.status === 'posted') {
     body.account_id = await getDefaultPTBankId();
   }
 
-  // minta balik kolom id
+  // insert expense
   const { data, error } = await supabase
     .from('expenses')
     .insert(body)
-    .select('id')     // <— penting
+    .select('id, payable_id, invoice_no, vendor_id')
     .single();
-
   if (error) throw error;
-  return { id: Number(data.id) };
+  const expenseId = Number(data.id);
+
+  // 1) coba autolink ke payable berdasarkan invoice_no + vendor_id
+  await linkExpenseToPayable(expenseId);
+
+  // 2) ambil payable_id terbaru lalu recalc status payable
+  const { data: exp2 } = await supabase
+    .from('expenses')
+    .select('payable_id')
+    .eq('id', expenseId)
+    .maybeSingle();
+
+  if (exp2?.payable_id) {
+    await recalcPayableStatusClient(Number(exp2.payable_id));
+  }
+
+  return { id: expenseId };
 }
 
 export async function updateExpense(id: number, payload: BaseExpensePayload) {
@@ -104,8 +124,24 @@ export async function updateExpense(id: number, payload: BaseExpensePayload) {
   if (body.source === 'PT' && body.status === 'posted') {
     body.account_id = await getDefaultPTBankId();
   }
+
+  // update expense
   const { error } = await supabase.from('expenses').update(body).eq('id', id);
   if (error) throw error;
+
+  // 1) coba autolink (kalau invoice/vendor barusan berubah)
+  await linkExpenseToPayable(id);
+
+  // 2) ambil payable_id terbaru lalu recalc status payable
+  const { data: exp2 } = await supabase
+    .from('expenses')
+    .select('payable_id')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (exp2?.payable_id) {
+    await recalcPayableStatusClient(Number(exp2.payable_id));
+  }
 }
 
 export async function setExpenseStatus(id: number, status: 'draft'|'posted'|'void') {
@@ -115,25 +151,28 @@ export async function setExpenseStatus(id: number, status: 'draft'|'posted'|'voi
     if (e0) throw e0;
     if (row?.source === 'PT' && !row?.account_id) patch.account_id = await getDefaultPTBankId();
   }
+
   const { error } = await supabase.from('expenses').update(patch).eq('id', id);
   if (error) throw error;
+
+  // 1) pastikan sudah ter-link
+  await linkExpenseToPayable(id);
+
+  // 2) recalc status payable kalau ada
+  const { data: exp2 } = await supabase
+    .from('expenses')
+    .select('payable_id')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (exp2?.payable_id) {
+    await recalcPayableStatusClient(Number(exp2.payable_id));
+  }
 }
 
 export async function deleteExpense(id: number) {
   const { error } = await supabase.from('expenses').delete().eq('id', id);
   if (error) throw error;
-}
-
-/* ========= queries ========= */
-
-function monthToRange(month: string): { from: string; to: string } {
-  const y = Number(month.slice(0, 4));
-  const m = Number(month.slice(5, 7));
-  const from = `${y}-${String(m).padStart(2, '0')}-01`;
-  const nextY = m === 12 ? y + 1 : y;
-  const nextM = m === 12 ? 1 : m + 1;
-  const to = `${nextY}-${String(nextM).padStart(2, '0')}-01`;
-  return { from, to };
 }
 
 export async function listExpenses(filters: ExpenseListFilters) {
@@ -147,21 +186,25 @@ export async function listExpenses(filters: ExpenseListFilters) {
     .from('expenses')
     .select(`
       id, expense_date, period_month, source, status, amount,
-      category_id, subcategory_id, account_id,
+      category_id, subcategory_id, account_id, cashbox_id, payable_id,
       shareholder_id, vendor_id, vendor_name, invoice_no, note,
       created_at, updated_at,
       categories:categories(name),
       subcategories:subcategories(name),
       shareholders:shareholders(name),
       vendors:vendors(name),
-      po_expense_allocations:po_expense_allocations(
+      payables:payables!expenses_payable_id_fkey(
+        id,
+        po_id,
         purchase_orders:purchase_orders(id, po_number)
       )
     `, { count: 'exact', head: false });
 
   if (month && /^\d{4}-\d{2}$/.test(month)) {
-    const { from, to } = monthToRange(month);
-    query = query.gte('expense_date', from).lt('expense_date', to);
+    const from = `${month}-01`;
+    const [y, m] = month.split('-').map(Number);
+    const next = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    query = query.gte('expense_date', from).lt('expense_date', next);
   } else {
     if (date_from) query = query.gte('expense_date', date_from);
     if (date_to)   query = query.lte('expense_date', date_to);
@@ -185,15 +228,8 @@ export async function listExpenses(filters: ExpenseListFilters) {
   if (error) throw error;
 
   const rows: ExpenseListItem[] = (data || []).map((r: any) => {
-    const po_refs = (() => {
-      const list = (r.po_expense_allocations || [])
-        .map((a: any) => pickOne(a?.purchase_orders))
-        .filter(Boolean)
-        .map((po: any) => ({ id: Number(po.id), po_number: String(po.po_number || '') }));
-      const uniq = new Map<number, { id:number; po_number:string }>();
-      for (const x of list) uniq.set(x.id, x);
-      return [...uniq.values()];
-    })();
+    const po = r?.payables?.purchase_orders ?? null;
+    const po_ref = po?.id ? { id: Number(po.id), po_number: String(po.po_number ?? '') } : null;
 
     return {
       id: r.id,
@@ -202,43 +238,34 @@ export async function listExpenses(filters: ExpenseListFilters) {
       source: r.source,
       status: r.status,
       amount: r.amount,
+
       category_id: r.category_id,
       subcategory_id: r.subcategory_id,
       category_name: r.categories?.name ?? '',
       subcategory_name: r.subcategories?.name ?? '',
+
       shareholder_id: r.shareholder_id ?? null,
       shareholder_name: r.shareholders?.name ?? null,
+
       vendor_id: r.vendor_id ?? null,
       vendor_name: r.vendor_name ?? r.vendors?.name ?? null,
+
       invoice_no: r.invoice_no ?? null,
       note: r.note ?? null,
+
       created_at: r.created_at,
       updated_at: r.updated_at,
-      po_refs, // ⬅️ NEW
+
+      // KUNCI: bawa payable_id
+      payable_id: r.payable_id ?? r?.payables?.id ?? null,
+
+      // kompat lama (kalau UI lain masih pakai)
+      po_ref,
+      po_refs: po_ref ? [po_ref] : [],
     };
   });
 
   return { rows, count: count ?? 0 };
-}
-
-export async function getExpense(id: number): Promise<ExpenseDetail> {
-  const { data, error } = await supabase
-    .from('expenses')
-    .select(`
-      id, source, expense_date, period_month, amount,
-      category_id, subcategory_id, vendor_id, account_id,
-      shareholder_id, cashbox_id,
-      invoice_no, note, status, created_at, updated_at,
-      categories:categories(name),
-      subcategories:subcategories(name),
-      shareholders:shareholders(name),
-      vendors:vendors(name),
-      petty_cash_boxes:petty_cash_boxes(name)
-    `)
-    .eq('id', id)
-    .single();
-  if (error) throw error;
-  return data as unknown as ExpenseDetail;
 }
 
 export async function getBudgetProgress(args: {
@@ -253,6 +280,130 @@ export async function getBudgetProgress(args: {
     .eq('category_id', args.category_id)
     .eq('subcategory_id', args.subcategory_id)
     .maybeSingle();
+
   if (error) throw error;
   return (data as any) ?? null;
+}
+
+export async function getExpense(id: number): Promise<ExpenseDetail> {
+  const { data, error } = await supabase
+    .from('expenses')
+    .select(`
+      id, source, expense_date, period_month, amount, status,
+      category_id, subcategory_id,
+      vendor_id, vendor_name, account_id, shareholder_id, cashbox_id,
+      invoice_no, note, created_at, updated_at, payable_id,
+      categories:categories(name),
+      subcategories:subcategories(name),
+      shareholders:shareholders(name),
+      vendors:vendors(name),
+      petty_cash_boxes:petty_cash_boxes(name),
+      payables:payables!expenses_payable_id_fkey(
+        id,
+        po_id,
+        purchase_orders:purchase_orders(id, po_number)
+      )
+    `)
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new Error('Expense tidak ditemukan');
+
+  const po = (data as any)?.payables?.purchase_orders ?? null;
+  const po_ref = po?.id ? { id: Number(po.id), po_number: String(po.po_number ?? '') } : null;
+
+  return {
+    id: data.id,
+    source: data.source,
+    expense_date: data.expense_date,
+    period_month: data.period_month,
+    amount: data.amount,
+
+    category_id: data.category_id,
+    subcategory_id: data.subcategory_id,
+
+    vendor_id: data.vendor_id ?? null,
+    account_id: data.account_id ?? null,
+    shareholder_id: data.shareholder_id ?? null,
+    cashbox_id: data.cashbox_id ?? null,
+
+    invoice_no: data.invoice_no ?? null,
+    note: data.note ?? null,
+    status: data.status,
+
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+
+    categories: (data as any).categories ?? null,
+    subcategories: (data as any).subcategories ?? null,
+    shareholders: (data as any).shareholders ?? null,
+    vendors: (data as any).vendors ?? null,
+    petty_cash_boxes: (data as any).petty_cash_boxes ?? null,
+
+    payable_id: data.payable_id ?? (data as any).payables?.id ?? null,
+    po_ref,
+  };
+}
+
+async function recalcPayableStatusClient(payableId: number) {
+  // 1) ambil amount invoice
+  const { data: p, error: ep } = await supabase
+    .from('payables')
+    .select('id, amount, status') // ganti 'amount' ke 'gross_amount' kalau kolommu pakai nama itu
+    .eq('id', payableId)
+    .maybeSingle();
+  if (ep || !p) return;
+
+  // 2) total dibayar = sum(expenses.amount) yang status 'posted'
+  const { data: ex, error: ee } = await supabase
+    .from('expenses')
+    .select('amount, status')
+    .eq('payable_id', payableId);
+  if (ee) return;
+
+  const paid = (ex ?? [])
+    .filter(e => e.status === 'posted')
+    .reduce((s, e: any) => s + Number(e.amount || 0), 0);
+
+  const newStatus = paid >= Number(p.amount || 0) ? 'paid' : 'unpaid';
+
+  if (newStatus !== p.status) {
+    await supabase.from('payables').update({ status: newStatus }).eq('id', payableId);
+  }
+}
+async function linkExpenseToPayable(expenseId: number) {
+  const { data: exp } = await supabase
+    .from('expenses')
+    .select('invoice_no,vendor_id')
+    .eq('id', expenseId)
+    .maybeSingle();
+  if (!exp?.invoice_no || !exp?.vendor_id) return;
+
+  // coba exact match dulu
+  let { data: pay } = await supabase
+    .from('payables')
+    .select('id')
+    .eq('vendor_id', exp.vendor_id)
+    .eq('invoice_no', exp.invoice_no)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // fallback: case-insensitive (tanpa wildcard = equal ignore case)
+  if (!pay?.id) {
+    const res = await supabase
+      .from('payables')
+      .select('id')
+      .eq('vendor_id', exp.vendor_id)
+      .ilike('invoice_no', exp.invoice_no) // tanpa % → equal, case-insensitive
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    pay = res.data ?? null;
+  }
+
+  if (!pay?.id) return;
+
+  await supabase.from('expenses').update({ payable_id: pay.id }).eq('id', expenseId);
 }

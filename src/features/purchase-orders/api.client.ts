@@ -1,75 +1,35 @@
 'use client';
+
 import { supabase } from '@/lib/supabase/client';
 
-/** Ambil 1 dari object/array/null */
+/* ========== Types ========== */
+export type ExpenseStatus = 'draft' | 'posted' | 'void';
+export type ExpenseSource = 'PT' | 'RAB' | 'PETTY';
+export type PaymentStatus = 'UNBILLED'|'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
+
 const pickOne = <T,>(v: T | T[] | null | undefined): T | null =>
   Array.isArray(v) ? (v[0] ?? null) : (v ?? null);
 
-/* ===== Types ===== */
-export type ExpenseStatus = 'draft'|'posted'|'void';
-export type ExpenseSource = 'PT'|'RAB'|'PETTY';
-export type PaymentStatus = 'UNPAID'|'PARTIAL'|'PAID'|'OVERDUE';
-// ==== Types ====
-export type ExpenseCategory = { id: number; name: string };
-export type ExpenseSubcategory = { id: number; name: string; category_id: number };
-
-// ==== List categories ====
-export async function listExpenseCategories(): Promise<ExpenseCategory[]> {
-  const { data, error } = await supabase
-    .from('categories')                 // <-- ganti jika nama tabel berbeda
-    .select('id, name')
-    .order('name');
-  if (error) throw error;
-  return (data ?? []).map((r: any) => ({ id: Number(r.id), name: String(r.name ?? '') }));
-}
-
-// ==== List subcategories (ambil semua; nanti di-filter di FE) ====
-export async function listExpenseSubcategories(): Promise<ExpenseSubcategory[]> {
-  const { data, error } = await supabase
-    .from('subcategories')              // <-- ganti jika nama tabel berbeda
-    .select('id, name, category_id')
-    .order('category_id')
-    .order('name');
-  if (error) throw error;
-  return (data ?? []).map((r: any) => ({
-    id: Number(r.id),
-    name: String(r.name ?? ''),
-    category_id: Number(r.category_id ?? 0),
-  }));
-}
-
-// ==== Filter utility ====
-export function filterSubcatsByCategory(
-  allSubs: ExpenseSubcategory[],
-  categoryId: number | null
-): ExpenseSubcategory[] {
-  if (!categoryId) return [];
-  return allSubs.filter(s => s.category_id === categoryId);
-}
-
-
-
+/* ========== PO row shapes ========== */
 export type POListRow = {
   id: number;
   po_number: string;
   vendor_name: string;
   po_date: string | null;
   delivery_date: string | null;
-  /** due_date dari v_po_with_terms (effective) */
-  due_date: string | null;
-  /** total_amount dari v_po_with_terms */
-  total: number | null;
+  due_date: string | null;        // dari v_po_with_terms.due_date_effective
+  total: number | null;           // dari v_po_with_terms.total_amount
   is_tax_included: boolean;
   tax_percent: number | null;
-  status: 'draft'|'sent'|'delivered'|'cancelled'|string;
-  term_code?: 'CBD'|'COD'|'NET'|null;
+  status: 'draft' | 'sent' | 'delivered' | 'cancelled' | string;
+  term_code?: 'CBD' | 'COD' | 'NET' | null;
   term_days?: number | null;
 
-  /** ==== hasil merge dengan v_po_finance ==== */
-  amount_paid?: number;           // paid
-  balance_due?: number;           // outstanding
+  // hasil merge v_po_finance
+  amount_paid?: number;
+  balance_due?: number;
   payment_status?: PaymentStatus; // UNPAID | PARTIAL | PAID | OVERDUE
-  is_overdue?: boolean;           // derived from payment_status === 'OVERDUE'
+  is_overdue?: boolean;
   days_overdue?: number;
 };
 
@@ -89,38 +49,33 @@ export type POPaymentRow = {
   };
 };
 
-/* ===== Helpers pembayaran ===== */
-const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+/* ========== Helpers pembayaran ========== */
+const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 
 /** Hitung status tunggal: PAID > OVERDUE > PARTIAL > UNPAID */
-function derivePayment(
-  total: number,
-  paid: number,
-  due_date_effective: string | null
-) {
+function derivePayment(total: number, paid: number, due_date_effective: string | null) {
   const t = Number(total || 0);
   const p = Number(paid || 0);
   const balance = Math.max(t - p, 0);
 
   const today = startOfDay(new Date());
-  let status: PaymentStatus = 'UNPAID';
+  let status: PaymentStatus = 'UNBILLED';
   let days_overdue = 0;
 
   if (p >= t - 0.5) {
     status = 'PAID';
   } else {
-    const dueIsPast = Boolean(
+    const dueIsPast =
       balance > 0 &&
-      due_date_effective &&
-      startOfDay(new Date(`${due_date_effective}T00:00:00`)) < today
-    );
+      !!due_date_effective &&
+      startOfDay(new Date(`${due_date_effective}T00:00:00`)) < today;
+
     if (dueIsPast) {
       status = 'OVERDUE';
       days_overdue = Math.max(
         1,
         Math.ceil(
-          (Number(today) - Number(startOfDay(new Date(`${due_date_effective}T00:00:00`)))) /
-          86400000
+          (Number(today) - Number(startOfDay(new Date(`${due_date_effective}T00:00:00`)))) / 86400000
         )
       );
     } else {
@@ -131,9 +86,7 @@ function derivePayment(
   return { paid: p, balance, status, days_overdue };
 }
 
-/* =========================
-   PO List: ambil dari v_po_with_terms lalu MERGE v_po_finance
-========================= */
+/* ========== PO List (merge v_po_with_terms + v_po_finance) ========== */
 export async function listPurchaseOrders({ q = '', page = 1, pageSize = 10 }) {
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
@@ -142,22 +95,11 @@ export async function listPurchaseOrders({ q = '', page = 1, pageSize = 10 }) {
     .from('v_po_with_terms')
     .select(
       `
-      id,
-      po_number,
-      po_date,
-      delivery_date,
-      status,
-      is_tax_included,
-      tax_percent,
-      vendor_id,
-      vendor_name,
-      subtotal,
-      tax_amount,
-      total_amount,
-      effective_term_code,
-      effective_term_days,
-      due_date_effective
-    `,
+      id, po_number, po_date, delivery_date, status,
+      is_tax_included, tax_percent, vendor_id, vendor_name,
+      subtotal, tax_amount, total_amount,
+      effective_term_code, effective_term_days, due_date_effective
+      `,
       { count: 'exact' }
     )
     .order('po_date', { ascending: false })
@@ -169,117 +111,136 @@ export async function listPurchaseOrders({ q = '', page = 1, pageSize = 10 }) {
   const { data, error, count } = await query;
   if (error) throw error;
 
-  const baseRows = (data ?? []).map((r: any) => ({
-    id: r.id as number,
-    po_number: r.po_number as string,
-    vendor_name: r.vendor_name ?? '',
-    po_date: r.po_date as string | null,
-    delivery_date: r.delivery_date as string | null,
-    due_date: (r.due_date_effective ?? null) as string | null,
-    total: Number(r.total_amount ?? 0),
-    is_tax_included: !!r.is_tax_included,
-    tax_percent: r.tax_percent == null ? null : Number(r.tax_percent),
-    status: r.status as string,
-    term_code: r.effective_term_code ?? null,
-    term_days: r.effective_term_days == null ? null : Number(r.effective_term_days),
-  })) as POListRow[];
+// ... tetap sama di atas
 
-  // Ambil angka Paid/Outstanding dari v_po_finance untuk ID yang tampil pada halaman ini
-  const ids = baseRows.map(r => r.id);
-  if (ids.length) {
-    const { data: fin, error: finErr } = await supabase
-      .from('v_po_finance')
-      .select('id, paid, outstanding')
-      .in('id', ids);
-    if (finErr) throw finErr;
+const baseRows: POListRow[] = (data ?? []).map((r: any) => ({
+  id: Number(r.id),
+  po_number: String(r.po_number),
+  vendor_name: String(r.vendor_name ?? ''),
+  po_date: r.po_date ?? null,
+  delivery_date: r.delivery_date ?? null,
+  due_date: r.due_date_effective ?? null,
+  total: Number(r.total_amount ?? 0),
+  is_tax_included: !!r.is_tax_included,
+  tax_percent: r.tax_percent == null ? null : Number(r.tax_percent),
+  status: r.status as string,
+  term_code: r.effective_term_code ?? null,
+  term_days: r.effective_term_days == null ? null : Number(r.effective_term_days),
 
-    const mapFin = new Map<number, { paid: number; outstanding: number }>();
-    (fin ?? []).forEach((r: any) =>
-      mapFin.set(Number(r.id), { paid: Number(r.paid || 0), outstanding: Number(r.outstanding || 0) })
-    );
+  // DEFAULT: belum ditagih → UNBILLED
+  amount_paid: 0,
+  balance_due: Number(r.total_amount ?? 0),
+  payment_status: 'UNBILLED',
+  is_overdue: false,
+  days_overdue: 0,
+}));
 
-    baseRows.forEach(r => {
-      const f = mapFin.get(r.id) || { paid: 0, outstanding: Number(r.total || 0) };
-      const calc = derivePayment(Number(r.total || 0), f.paid, r.due_date);
+const ids = baseRows.map(r => r.id);
+if (ids.length) {
+  // 1) angka paid/outstanding
+  const { data: fin, error: finErr } = await supabase
+    .from('v_po_finance')
+    .select('id, paid, outstanding')
+    .in('id', ids);
+  if (finErr) throw finErr;
+  const mapFin = new Map<number, { paid: number; outstanding: number }>();
+  (fin ?? []).forEach((r: any) =>
+    mapFin.set(Number(r.id), {
+      paid: Number(r.paid || 0),
+      outstanding: Number(r.outstanding || 0),
+    })
+  );
 
-      r.amount_paid   = calc.paid;
-      r.balance_due   = calc.balance;
-      r.payment_status = calc.status;               // satu status utama
-      r.is_overdue    = calc.status === 'OVERDUE';  // derived
-      r.days_overdue  = calc.days_overdue;
-    });
-  }
+  // 2) apakah ada payable aktif (non-void) utk PO ini?
+  const { data: pays, error: payErr } = await supabase
+    .from('payables')
+    .select('po_id')
+    .in('po_id', ids)
+    .in('status', ['unpaid', 'paid']); // abaikan 'void'
+  if (payErr) throw payErr;
 
-  return { rows: baseRows, total: count ?? 0 };
+  const hasPayable = new Set<number>();
+  (pays ?? []).forEach((p: any) => {
+    if (p?.po_id != null) hasPayable.add(Number(p.po_id));
+  });
+
+  // 3) kalau ADA payable → hitung UNPAID/PARTIAL/OVERDUE/PAID
+  baseRows.forEach(r => {
+    if (!hasPayable.has(r.id)) {
+      // keep defaults: UNBILLED
+      return;
+    }
+    const f = mapFin.get(r.id) || { paid: 0, outstanding: Number(r.total || 0) };
+    const calc = derivePayment(Number(r.total || 0), f.paid, r.due_date);
+    r.amount_paid   = calc.paid;
+    r.balance_due   = calc.balance;
+    r.payment_status = calc.status;
+    r.is_overdue    = calc.status === 'OVERDUE';
+    r.days_overdue  = calc.days_overdue;
+  });
 }
 
-/* =========================
-   Update Status (client)
-========================= */
+return { rows: baseRows, total: count ?? 0 };
+
+}
+
+/* ========== Update status header PO ========== */
 export async function updatePurchaseOrderStatus(id: number, status: string) {
   const { error } = await supabase.from('purchase_orders').update({ status }).eq('id', id);
   if (error) throw error;
 }
 
-/* =========================
-   Delete PO (hapus allocations ➜ items ➜ header)
-========================= */
+/* ========== Delete PO beserta dependensinya ========== */
 export async function deletePurchaseOrder(id: number) {
-  // 1) hapus alokasi pembayaran yang refer ke PO ini
   const { error: allocErr } = await supabase
     .from('po_expense_allocations')
     .delete()
     .eq('purchase_order_id', id);
   if (allocErr) throw allocErr;
 
-  // 2) hapus item
-  const { error: itemsErr } = await supabase.from('po_items').delete().eq('purchase_order_id', id);
+  const { error: itemsErr } = await supabase
+    .from('po_items')
+    .delete()
+    .eq('purchase_order_id', id);
   if (itemsErr) throw itemsErr;
 
-  // 3) hapus header
-  const { error: poErr } = await supabase.from('purchase_orders').delete().eq('id', id);
+  const { error: poErr } = await supabase
+    .from('purchase_orders')
+    .delete()
+    .eq('id', id);
   if (poErr) throw poErr;
 }
 
-/* =========================
-   Finance: paid/outstanding dari view v_po_finance
-   (opsional) kirimkan due_date_effective agar bisa derive OVERDUE
-========================= */
-// src/features/purchase-orders/api.client.ts
+/* ========== Finance ringkas untuk satu PO ========== */
 export async function getPOFinance(poId: number) {
   const { data, error } = await supabase
     .from('v_po_finance')
     .select('id,total,paid')
     .eq('id', poId)
-    .maybeSingle(); // penting: tidak error kalau belum ada row
-
+    .maybeSingle();
   if (error) throw error;
 
   const total = Number(data?.total ?? 0);
-  const paid  = Number(data?.paid  ?? 0);
+  const paid = Number(data?.paid ?? 0);
   const outstanding = Math.max(total - paid, 0);
-
   return { id: poId, total, paid, outstanding };
 }
-/* =========================
-   List payment allocations utk 1 PO
-========================= */
+
+/* ========== Daftar alokasi expense ke PO ========== */
 export async function listPOPayments(poId: number): Promise<POPaymentRow[]> {
   const { data, error } = await supabase
     .from('po_expense_allocations')
-    .select(
-      `
+    .select(`
       id, amount, created_at,
       expenses:expenses(
         id, expense_date, status, source, invoice_no, note, amount, vendor_id
       )
-    `
-    )
+    `)
     .eq('purchase_order_id', poId)
     .order('id', { ascending: true });
   if (error) throw error;
 
-  const rows: POPaymentRow[] = (data ?? []).map((r: any) => {
+  return (data ?? []).map((r: any) => {
     const e = pickOne<any>(r.expenses);
     return {
       id: Number(r.id),
@@ -297,13 +258,9 @@ export async function listPOPayments(poId: number): Promise<POPaymentRow[]> {
       },
     };
   });
-
-  return rows;
 }
 
-/* =========================
-   Bayar PO (alur via PO) : RPC pay_po
-========================= */
+/* ========== RPC bayar PO (buat expense + allocation) ========== */
 export async function payPO(
   poId: number,
   p: {
@@ -315,7 +272,7 @@ export async function payPO(
     subcategory_id: number;
     status?: ExpenseStatus;
     shareholder_id?: number | null; // RAB
-    cashbox_id?: number | null; // PETTY
+    cashbox_id?: number | null;     // PETTY
     invoice_no?: string | null;
     note?: string | null;
   }
@@ -338,9 +295,7 @@ export async function payPO(
   return data as { expense_id: number; allocation_id: number }[];
 }
 
-/* =========================
-   Alur via Expense: alokasikan expense ke PO
-========================= */
+/* ========== RPC alokasikan expense ke PO (alur dari expense) ========== */
 export async function allocateExpenseToPO(expenseId: number, poId: number, amount: number) {
   const { data, error } = await supabase.rpc('allocate_expense_to_po', {
     p_expense_id: expenseId,
@@ -351,10 +306,15 @@ export async function allocateExpenseToPO(expenseId: number, poId: number, amoun
   return data as number; // allocation_id
 }
 
+/* ========== Pencarian PO untuk modul pembayaran ========== */
 export type POForPayment = {
-  id: number; po_number: string;
-  vendor_id: number; vendor_name: string;
-  total: number; paid: number; outstanding: number;
+  id: number;
+  po_number: string;
+  vendor_id: number;
+  vendor_name: string;
+  total: number;
+  paid: number;
+  outstanding: number;
 };
 
 export async function searchPOsForPayment(q = '', limit = 20): Promise<POForPayment[]> {
@@ -372,13 +332,12 @@ export async function searchPOsForPayment(q = '', limit = 20): Promise<POForPaym
   if (error) throw error;
 
   return (data ?? []).map((r: any) => ({
-    id: r.id,
-    po_number: r.po_number,
-    vendor_id: r.vendor_id,
-    vendor_name: r.vendor_name ?? '—',
+    id: Number(r.id),
+    po_number: String(r.po_number),
+    vendor_id: Number(r.vendor_id),
+    vendor_name: String(r.vendor_name ?? '—'),
     total: Number(r.total || 0),
     paid: Number(r.paid || 0),
     outstanding: Number(r.outstanding || 0),
   }));
 }
-
